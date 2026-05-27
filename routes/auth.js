@@ -18,14 +18,12 @@ router.post('/register', async (req, res) => {
     }
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
-    const countQuery = await db.query('SELECT COUNT(*) FROM users');
-    const totalUsers = parseInt(countQuery.rows[0].count);
-    const assignedSlotId = totalUsers % 24;
+    // No slot calculation – just insert
     const newUser = await db.query(
-      `INSERT INTO users (username, email, password_hash, facebook_profile_url, assigned_slot_id)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING user_id, username, email, facebook_profile_url, assigned_slot_id`,
-      [username, email, passwordHash, facebook_profile_url, assignedSlotId]
+      `INSERT INTO users (username, email, password_hash, facebook_profile_url)
+       VALUES ($1, $2, $3, $4)
+       RETURNING user_id, username, email, facebook_profile_url`,
+      [username, email, passwordHash, facebook_profile_url]
     );
     res.status(201).json({
       message: 'Registration successful!',
@@ -53,8 +51,9 @@ router.post('/login', async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ error: 'Invalid credentials.' });
     }
+    // JWT now only contains user_id (no slot)
     const token = jwt.sign(
-      { user_id: user.user_id, assigned_slot_id: user.assigned_slot_id },
+      { user_id: user.user_id },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -65,7 +64,6 @@ router.post('/login', async (req, res) => {
         id: user.user_id,
         username: user.username,
         email: user.email,
-        assigned_slot_id: user.assigned_slot_id,
         facebook_profile_url: user.facebook_profile_url
       }
     });
@@ -75,11 +73,11 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// GET /api/auth/me – get current user + subscription status
+// GET /api/auth/me
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const userRes = await db.query(
-      'SELECT user_id, username, email, assigned_slot_id, facebook_profile_url FROM users WHERE user_id = $1',
+      'SELECT user_id, username, email, facebook_profile_url FROM users WHERE user_id = $1',
       [req.user.user_id]
     );
     if (userRes.rows.length === 0) {
