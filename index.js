@@ -6,17 +6,28 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Dynamic CORS – allow localhost for dev, any origin in production (or your Render URL)
+// ✅ Updated allowed origins: add your Netlify URL here
 const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? ['https://your-frontend.onrender.com']   // replace with your actual frontend URL
-  : ['http://localhost:5500', 'http://localhost:3000', 'http://127.0.0.1:5500', 'http://127.0.0.1:3000'];
+  ? [
+      'https://creator-coop-2026.netlify.app'   // 👈 YOUR ACTUAL FRONTEND URL
+      // Add other production domains if needed
+    ]
+  : [
+      'http://localhost:5500',
+      'http://localhost:3000',
+      'http://127.0.0.1:5500',
+      'http://127.0.0.1:3000'
+    ];
 
+// Enhanced CORS middleware (handles preflight OPTIONS correctly)
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error(`CORS policy: ${origin} not allowed`));
     }
   },
   credentials: true,
@@ -30,14 +41,14 @@ app.use(express.json());
 const authRoutes = require('./routes/auth');
 const linkRoutes = require('./routes/links');
 const paymentRoutes = require('./routes/payments');
-const profileRoutes = require('./routes/profile');  // 👈 NEW
+const profileRoutes = require('./routes/profile');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
-app.use('/api/profile', profileRoutes);              // 👈 NEW
+app.use('/api/profile', profileRoutes);
 
-// Health check
+// Health check (for monitoring)
 app.get('/api/health', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW()');
