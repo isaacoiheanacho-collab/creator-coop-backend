@@ -43,11 +43,13 @@ const authRoutes = require('./routes/auth');
 const linkRoutes = require('./routes/links');
 const paymentRoutes = require('./routes/payments');
 const profileRoutes = require('./routes/profile');
+const boostRoutes = require('./routes/boosts');   // 👈 NEW: boosts endpoint
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/boosts', boostRoutes);              // 👈 NEW: register boosts route
 
 // Health check
 app.get('/api/health', async (req, res) => {
