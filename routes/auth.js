@@ -99,4 +99,20 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
+// POST /api/auth/update-profile – update username and Facebook profile URL
+router.post('/update-profile', authMiddleware, async (req, res) => {
+  const { username, facebook_profile_url } = req.body;
+  const { user_id } = req.user;
+  try {
+    await db.query(
+      'UPDATE users SET username = $1, facebook_profile_url = $2 WHERE user_id = $3',
+      [username, facebook_profile_url, user_id]
+    );
+    res.json({ message: 'Profile updated successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error updating profile' });
+  }
+});
+
 module.exports = router;

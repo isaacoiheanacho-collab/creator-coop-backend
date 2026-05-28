@@ -44,7 +44,7 @@ router.post('/boost', authMiddleware, async (req, res) => {
       }
     }
 
-    // 3. Insert new link (no slot_id, no capacity check)
+    // 3. Insert new link
     const newLink = await db.query(
       `INSERT INTO boost_links (creator_id, link_url)
        VALUES ($1, $2)
@@ -63,14 +63,34 @@ router.post('/boost', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/links/feed – show active tasks (exclude user's own + already engaged)
+// GET /api/links/last-post – fetch last post time for cooldown display
+router.get('/last-post', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT created_at FROM boost_links
+       WHERE creator_id = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [req.user.user_id]
+    );
+    if (result.rows.length === 0) {
+      return res.json({ lastPost: null });
+    }
+    res.json({ lastPost: result.rows[0].created_at });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/links/feed – show active tasks with creator username
 router.get('/feed', authMiddleware, async (req, res) => {
   const { user_id } = req.user;
 
   try {
     const feedQuery = await db.query(
-      `SELECT bl.link_id, bl.link_url, bl.created_at
+      `SELECT bl.link_id, bl.link_url, bl.created_at, u.username AS creator_username
        FROM boost_links bl
+       JOIN users u ON bl.creator_id = u.user_id
        WHERE bl.is_expired = FALSE
          AND bl.creator_id != $1
          AND bl.link_id NOT IN (
