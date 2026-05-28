@@ -18,7 +18,6 @@ router.post('/register', async (req, res) => {
     }
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
-    // No slot calculation – just insert
     const newUser = await db.query(
       `INSERT INTO users (username, email, password_hash, facebook_profile_url)
        VALUES ($1, $2, $3, $4)
@@ -51,7 +50,6 @@ router.post('/login', async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ error: 'Invalid credentials.' });
     }
-    // JWT now only contains user_id (no slot)
     const token = jwt.sign(
       { user_id: user.user_id },
       process.env.JWT_SECRET,
@@ -73,11 +71,13 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// GET /api/auth/me
+// GET /api/auth/me – returns user + subscription status + expiry + notification prefs
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const userRes = await db.query(
-      'SELECT user_id, username, email, facebook_profile_url FROM users WHERE user_id = $1',
+      `SELECT user_id, username, email, facebook_profile_url, notification_prefs
+       FROM users
+       WHERE user_id = $1`,
       [req.user.user_id]
     );
     if (userRes.rows.length === 0) {
@@ -89,9 +89,12 @@ router.get('/me', authMiddleware, async (req, res) => {
       [req.user.user_id]
     );
     const subscription_active = subRes.rows.length > 0;
+    const subscription_expiry = subscription_active ? subRes.rows[0].expires_at : null;
+
     res.json({
       user: userRes.rows[0],
-      subscription_active
+      subscription_active,
+      subscription_expiry
     });
   } catch (err) {
     console.error(err.message);
@@ -112,6 +115,35 @@ router.post('/update-profile', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error updating profile' });
+  }
+});
+
+// POST /api/auth/change-password
+router.post('/change-password', authMiddleware, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  const { user_id } = req.user;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current and new password are required.' });
+  }
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  }
+
+  try {
+    const userRes = await db.query('SELECT password_hash FROM users WHERE user_id = $1', [user_id]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+    const isValid = await bcrypt.compare(currentPassword, userRes.rows[0].password_hash);
+    if (!isValid) return res.status(401).json({ error: 'Current password is incorrect' });
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.query('UPDATE users SET password_hash = $1 WHERE user_id = $2', [newHash, user_id]);
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

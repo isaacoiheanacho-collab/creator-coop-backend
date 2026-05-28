@@ -30,10 +30,12 @@ app.use(express.json());
 const authRoutes = require('./routes/auth');
 const linkRoutes = require('./routes/links');
 const paymentRoutes = require('./routes/payments');
+const profileRoutes = require('./routes/profile');  // 👈 NEW
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/profile', profileRoutes);              // 👈 NEW
 
 // Health check
 app.get('/api/health', async (req, res) => {
