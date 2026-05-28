@@ -6,11 +6,11 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ✅ Updated allowed origins: add your Netlify URL here
+// ✅ ADD YOUR NETLIFY URL HERE (and any other production domains)
 const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
-      'https://creator-coop-2026.netlify.app'   // 👈 YOUR ACTUAL FRONTEND URL
-      // Add other production domains if needed
+      'https://creator-coop-2026.netlify.app'   // 👈 YOUR FRONTEND ON NETLIFY
+      // Add more if needed: 'https://www.yourdomain.com'
     ]
   : [
       'http://localhost:5500',
@@ -22,11 +22,12 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
 // Enhanced CORS middleware (handles preflight OPTIONS correctly)
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, Postman)
+    // Allow requests with no origin (like mobile apps, curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
+      console.warn(`CORS blocked origin: ${origin}`);
       callback(new Error(`CORS policy: ${origin} not allowed`));
     }
   },
@@ -48,7 +49,7 @@ app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/profile', profileRoutes);
 
-// Health check (for monitoring)
+// Health check
 app.get('/api/health', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW()');
