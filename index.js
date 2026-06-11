@@ -6,17 +6,20 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ✅ ADD YOUR NETLIFY URL HERE (and any other production domains)
+// ✅ CORRECTED CORS CONFIGURATION FOR NETLIFY & VERCEL
 const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
-      'https://creator-coop-2026.netlify.app'   // 👈 YOUR FRONTEND ON NETLIFY
-      // Add more if needed: 'https://www.yourdomain.com'
+      'https://creator-coop.netlify.app',      // ✅ Your Netlify URL
+      'https://creator-coop.vercel.app',       // ✅ Your Vercel URL
+      'https://www.creator-coop.netlify.app'   // Optional: www version
     ]
   : [
-      'http://localhost:5500',
+      'http://localhost:3000',
       'http://localhost:3001',
-      'http://127.0.0.1:5500',
-      'http://127.0.0.1:3001'
+      'http://localhost:5500',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:3001',
+      'http://127.0.0.1:5500'
     ];
 
 // Enhanced CORS middleware (handles preflight OPTIONS correctly)
@@ -43,13 +46,13 @@ const authRoutes = require('./routes/auth');
 const linkRoutes = require('./routes/links');
 const paymentRoutes = require('./routes/payments');
 const profileRoutes = require('./routes/profile');
-const boostRoutes = require('./routes/boosts');   // 👈 NEW: boosts endpoint
+const boostRoutes = require('./routes/boosts');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/profile', profileRoutes);
-app.use('/api/boosts', boostRoutes);              // 👈 NEW: register boosts route
+app.use('/api/boosts', boostRoutes);
 
 // Health check
 app.get('/api/health', async (req, res) => {
