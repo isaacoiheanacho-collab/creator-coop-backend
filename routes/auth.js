@@ -205,15 +205,26 @@ router.post('/forgot-password', async (req, res) => {
       [user.user_id, resetToken, tokenExpiry]
     );
 
-    // Build reset link (works with both localhost and production)
+    // ✅ FIXED: Point to frontend, not backend
+    // Check if request is from localhost (development) or production
     const isLocalhost = req.get('host').includes('localhost') || req.get('host').includes('127.0.0.1');
-    const baseUrl = isLocalhost 
-      ? `http://${req.get('host')}`
-      : `https://${req.get('host')}`;
     
-    const resetLink = `${baseUrl}/reset-password.html?token=${resetToken}&email=${encodeURIComponent(email)}`;
+    // Production frontend URLs (Netlify or Vercel)
+    // You can also check the Origin header to determine which frontend is calling
+    const origin = req.get('origin') || '';
+    let frontendUrl;
     
-    // Log the reset link (in production, you would send this via email)
+    if (isLocalhost) {
+      frontendUrl = 'http://localhost:3000';
+    } else if (origin.includes('vercel.app')) {
+      frontendUrl = 'https://creator-coop.vercel.app';
+    } else {
+      frontendUrl = 'https://creator-coop.netlify.app';
+    }
+    
+    const resetLink = `${frontendUrl}/reset-password.html?token=${resetToken}&email=${encodeURIComponent(email)}`;
+    
+    // Log the reset link
     console.log('\n🔐 ===== PASSWORD RESET LINK =====');
     console.log(`Email: ${email}`);
     console.log(`Reset Link: ${resetLink}`);
@@ -221,8 +232,6 @@ router.post('/forgot-password', async (req, res) => {
     console.log(`Expires: ${tokenExpiry.toISOString()}`);
     console.log('================================\n');
 
-    // Return success message (in production, you'd send email and not return the link)
-    // For now, return the link in development for testing
     const isProduction = process.env.NODE_ENV === 'production';
     
     res.status(200).json({ 
