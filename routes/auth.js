@@ -6,6 +6,9 @@ const db = require('../db');
 const jwt = require('jsonwebtoken');
 const authMiddleware = require('../authMiddleware');
 
+// ==================== EMAIL SERVICE (Brevo) ====================
+const { sendResetPasswordEmail } = require('../utils/emailService');
+
 // ==================== HELPER FUNCTIONS ====================
 
 /**
@@ -159,9 +162,9 @@ router.post('/change-password', authMiddleware, async (req, res) => {
   }
 });
 
-// ==================== PASSWORD RESET (TOKEN-BASED) ====================
+// ==================== PASSWORD RESET (TOKEN-BASED WITH EMAIL) ====================
 
-// POST /api/auth/forgot-password - Generate reset token and return reset link
+// POST /api/auth/forgot-password - Generate reset token and send email
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   
@@ -174,7 +177,7 @@ router.post('/forgot-password', async (req, res) => {
     const userRes = await db.query('SELECT user_id, username FROM users WHERE email = $1', [email]);
     if (userRes.rows.length === 0) {
       // For security, don't reveal that email doesn't exist
-      return res.status(200).json({ message: 'If an account exists with that email, a reset link has been generated.' });
+      return res.status(200).json({ message: 'If an account exists with that email, a reset link has been sent.' });
     }
 
     const user = userRes.rows[0];
@@ -205,40 +208,46 @@ router.post('/forgot-password', async (req, res) => {
       [user.user_id, resetToken, tokenExpiry]
     );
 
-    // ✅ FIXED: Point to frontend, not backend
-    // Check if request is from localhost (development) or production
+    // ✅ UPDATED: Use your custom domain for reset links
     const isLocalhost = req.get('host').includes('localhost') || req.get('host').includes('127.0.0.1');
-    
-    // Production frontend URLs (Netlify or Vercel)
-    // You can also check the Origin header to determine which frontend is calling
-    const origin = req.get('origin') || '';
-    let frontendUrl;
-    
-    if (isLocalhost) {
-      frontendUrl = 'http://localhost:3000';
-    } else if (origin.includes('vercel.app')) {
-      frontendUrl = 'https://creator-coop.vercel.app';
-    } else {
-      frontendUrl = 'https://creator-coop.netlify.app';
-    }
+    const frontendUrl = isLocalhost 
+      ? 'http://localhost:3000'
+      : 'https://creatorcooptechnologies.com';  // 👈 YOUR NEW CUSTOM DOMAIN
     
     const resetLink = `${frontendUrl}/reset-password.html?token=${resetToken}&email=${encodeURIComponent(email)}`;
     
-    // Log the reset link
-    console.log('\n🔐 ===== PASSWORD RESET LINK =====');
-    console.log(`Email: ${email}`);
-    console.log(`Reset Link: ${resetLink}`);
-    console.log(`Token: ${resetToken}`);
-    console.log(`Expires: ${tokenExpiry.toISOString()}`);
-    console.log('================================\n');
-
     const isProduction = process.env.NODE_ENV === 'production';
-    
-    res.status(200).json({ 
-      message: 'If an account exists with that email, a reset link has been generated.',
-      reset_link: !isProduction ? resetLink : undefined,
-      dev_token: !isProduction ? resetToken : undefined
-    });
+
+    // Send email via Brevo (production) or log to console (development)
+    if (isProduction && process.env.BREVO_API_KEY) {
+      const emailResult = await sendResetPasswordEmail(email, resetLink, user.username);
+      if (emailResult.success) {
+        console.log(`✅ Password reset email sent to ${email}`);
+        res.status(200).json({ 
+          message: 'If an account exists with that email, a reset link has been sent to your inbox.'
+        });
+      } else {
+        console.error(`❌ Failed to send reset email to ${email}:`, emailResult.error);
+        // Still return success for security, but log error internally
+        res.status(200).json({ 
+          message: 'If an account exists with that email, a reset link has been sent to your inbox.'
+        });
+      }
+    } else {
+      // Development mode: log the reset link to console
+      console.log('\n🔐 ===== PASSWORD RESET LINK (DEVELOPMENT) =====');
+      console.log(`Email: ${email}`);
+      console.log(`Reset Link: ${resetLink}`);
+      console.log(`Token: ${resetToken}`);
+      console.log(`Expires: ${tokenExpiry.toISOString()}`);
+      console.log('===============================================\n');
+      
+      res.status(200).json({ 
+        message: 'If an account exists with that email, a reset link has been generated.',
+        reset_link: resetLink,
+        dev_token: resetToken
+      });
+    }
   } catch (err) {
     console.error('Forgot password error:', err);
     res.status(500).json({ error: 'Server error. Please try again later.' });
