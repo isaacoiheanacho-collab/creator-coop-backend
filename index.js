@@ -6,12 +6,13 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ✅ CORRECTED CORS CONFIGURATION FOR NETLIFY & VERCEL
+// ✅ UPDATED CORS CONFIGURATION
 const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
-      'https://creator-coop.netlify.app',      // ✅ Your Netlify URL
-      'https://creator-coop.vercel.app',       // ✅ Your Vercel URL
-      'https://www.creator-coop.netlify.app'   // Optional: www version
+      'https://creatorcooptechnologies.com',
+      'https://www.creatorcooptechnologies.com',
+      'https://creator-coop.vercel.app',
+      'https://creator-coop.netlify.app'
     ]
   : [
       'http://localhost:3000',
@@ -22,7 +23,6 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://127.0.0.1:5500'
     ];
 
-// Enhanced CORS middleware (handles preflight OPTIONS correctly)
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, curl)
