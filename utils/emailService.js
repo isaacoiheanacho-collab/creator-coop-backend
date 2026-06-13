@@ -25,6 +25,51 @@ const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'noreply@creatorcooptechn
 const SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Creator Co-Op';
 
 /**
+ * Generic email sender using Brevo API
+ */
+async function sendEmail(to, subject, htmlContent) {
+  // Development mode or no Brevo: log to console
+  if (!IS_PRODUCTION || !brevoClient) {
+    console.log('\n📧 ===== EMAIL (DEVELOPMENT) =====');
+    console.log(`To: ${to}`);
+    console.log(`Subject: ${subject}`);
+    console.log(`Content preview: ${htmlContent.replace(/<[^>]*>/g, ' ').substring(0, 150)}...`);
+    console.log('=================================\n');
+    return { success: true };
+  }
+
+  try {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'api-key': process.env.BREVO_API_KEY
+      },
+      body: JSON.stringify({
+        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
+        to: [{ email: to }],
+        subject: subject,
+        htmlContent: htmlContent
+      })
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      console.log(`✅ Email sent to ${to}: ${data.messageId}`);
+      return { success: true, messageId: data.messageId };
+    } else {
+      const error = await response.text();
+      console.error('❌ Brevo API error:', error);
+      return { success: false, error };
+    }
+  } catch (error) {
+    console.error('❌ Email send error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Send password reset email
  */
 async function sendResetPasswordEmail(to, resetLink, username = '') {
@@ -53,52 +98,11 @@ async function sendResetPasswordEmail(to, resetLink, username = '') {
     </html>
   `;
 
-  // Development mode or no Brevo: log to console
-  if (!IS_PRODUCTION || !brevoClient) {
-    console.log('\n📧 ===== PASSWORD RESET EMAIL (DEVELOPMENT) =====');
-    console.log(`To: ${to}`);
-    console.log(`Reset Link: ${resetLink}`);
-    console.log('===============================================\n');
-    return { success: true };
-  }
-
-  // Production: send real email via Brevo
-  try {
-    // For Brevo v2.x, the API might be different. Let's use a simple fetch approach
-    // as a fallback since the SDK is giving issues.
-    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'api-key': process.env.BREVO_API_KEY
-      },
-      body: JSON.stringify({
-        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-        to: [{ email: to }],
-        subject: subject,
-        htmlContent: html
-      })
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      console.log(`✅ Password reset email sent to ${to}: ${data.messageId}`);
-      return { success: true, messageId: data.messageId };
-    } else {
-      const error = await response.text();
-      console.error('❌ Brevo API error:', error);
-      return { success: false, error };
-    }
-  } catch (error) {
-    console.error('❌ Email send error:', error.message);
-    // Still return success for security (don't reveal error to user)
-    return { success: false, error: error.message };
-  }
+  return sendEmail(to, subject, html);
 }
 
 /**
- * Send verification OTP email (for future use)
+ * Send verification OTP email for email verification
  */
 async function sendVerificationEmail(to, otp, username = '') {
   const subject = 'Verify Your Email - Creator Co-Op';
@@ -125,43 +129,11 @@ async function sendVerificationEmail(to, otp, username = '') {
     </html>
   `;
 
-  if (!IS_PRODUCTION || !brevoClient) {
-    console.log('\n📧 ===== VERIFICATION EMAIL (DEVELOPMENT) =====');
-    console.log(`To: ${to}`);
-    console.log(`OTP: ${otp}`);
-    console.log('=============================================\n');
-    return { success: true };
-  }
-
-  try {
-    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'api-key': process.env.BREVO_API_KEY
-      },
-      body: JSON.stringify({
-        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-        to: [{ email: to }],
-        subject: subject,
-        htmlContent: html
-      })
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      console.log(`✅ Verification email sent to ${to}: ${data.messageId}`);
-      return { success: true, messageId: data.messageId };
-    } else {
-      const error = await response.text();
-      console.error('❌ Brevo API error:', error);
-      return { success: false, error };
-    }
-  } catch (error) {
-    console.error('❌ Email send error:', error.message);
-    return { success: false, error: error.message };
-  }
+  return sendEmail(to, subject, html);
 }
 
-module.exports = { sendResetPasswordEmail, sendVerificationEmail };
+module.exports = { 
+  sendEmail, 
+  sendResetPasswordEmail, 
+  sendVerificationEmail 
+};

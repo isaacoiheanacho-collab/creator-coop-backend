@@ -7,7 +7,7 @@ const jwt = require('jsonwebtoken');
 const authMiddleware = require('../authMiddleware');
 
 // ==================== EMAIL SERVICE (Brevo) ====================
-const { sendResetPasswordEmail } = require('../utils/emailService');
+const { sendResetPasswordEmail, sendVerificationEmail } = require('../utils/emailService');
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -16,6 +16,13 @@ const { sendResetPasswordEmail } = require('../utils/emailService');
  */
 function generateResetToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Generate a 6-digit OTP
+ */
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 // ==================== AUTH ROUTES ====================
@@ -34,18 +41,124 @@ router.post('/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
     const newUser = await db.query(
-      `INSERT INTO users (username, email, password_hash, facebook_profile_url)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (username, email, password_hash, facebook_profile_url, email_verified)
+       VALUES ($1, $2, $3, $4, FALSE)
        RETURNING user_id, username, email, facebook_profile_url`,
       [username, email, passwordHash, facebook_profile_url]
     );
     res.status(201).json({
-      message: 'Registration successful! Please log in.',
+      message: 'Registration successful! Please verify your email.',
       user: newUser.rows[0]
     });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Server error during registration.' });
+  }
+});
+
+// POST /api/auth/send-verification - Send OTP for email verification
+router.post('/send-verification', async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email address is required.' });
+  }
+
+  try {
+    const userCheck = await db.query(
+      'SELECT user_id, username, email_verified FROM users WHERE email = $1',
+      [email]
+    );
+    
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found. Please register first.' });
+    }
+    
+    if (userCheck.rows[0].email_verified) {
+      return res.status(400).json({ error: 'Email already verified.' });
+    }
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // Create email_verifications table if not exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS email_verifications (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) NOT NULL,
+        otp VARCHAR(6) NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        used BOOLEAN DEFAULT FALSE
+      )
+    `);
+    
+    // Delete old OTPs for this email
+    await db.query('DELETE FROM email_verifications WHERE email = $1 AND used = FALSE', [email]);
+    
+    // Store new OTP
+    await db.query(
+      'INSERT INTO email_verifications (email, otp, expires_at) VALUES ($1, $2, $3)',
+      [email, otp, expiresAt]
+    );
+
+    // Send verification email
+    const emailResult = await sendVerificationEmail(email, otp, userCheck.rows[0].username);
+    
+    if (emailResult.success) {
+      res.json({ 
+        message: 'Verification code sent to your email.',
+        dev_otp: process.env.NODE_ENV !== 'production' ? otp : undefined
+      });
+    } else {
+      res.status(500).json({ error: 'Failed to send verification email. Please try again.' });
+    }
+  } catch (err) {
+    console.error('Send verification error:', err);
+    res.status(500).json({ error: 'Failed to send verification code.' });
+  }
+});
+
+// POST /api/auth/verify-email - Verify OTP and mark email as verified
+router.post('/verify-email', async (req, res) => {
+  const { email, otp } = req.body;
+  
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and verification code are required.' });
+  }
+
+  try {
+    // Check if OTP is valid
+    const otpCheck = await db.query(
+      `SELECT id, expires_at FROM email_verifications 
+       WHERE email = $1 AND otp = $2 AND used = FALSE
+       ORDER BY created_at DESC LIMIT 1`,
+      [email, otp]
+    );
+    
+    if (otpCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification code.' });
+    }
+    
+    const record = otpCheck.rows[0];
+    
+    if (new Date(record.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Verification code has expired. Please request a new one.' });
+    }
+    
+    // Mark OTP as used
+    await db.query('UPDATE email_verifications SET used = TRUE WHERE id = $1', [record.id]);
+    
+    // Mark user as verified
+    await db.query('UPDATE users SET email_verified = TRUE WHERE email = $1', [email]);
+    
+    res.json({ 
+      message: 'Email verified successfully! You can now log in.',
+      verified: true
+    });
+  } catch (err) {
+    console.error('Email verification error:', err);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
   }
 });
 
@@ -61,6 +174,16 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid credentials.' });
     }
     const user = userQuery.rows[0];
+    
+    // ✅ Check if email is verified
+    if (!user.email_verified) {
+      return res.status(401).json({ 
+        error: 'Please verify your email before logging in. Check your inbox for the verification code.',
+        needs_verification: true,
+        email: user.email
+      });
+    }
+    
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({ error: 'Invalid credentials.' });
@@ -77,7 +200,8 @@ router.post('/login', async (req, res) => {
         id: user.user_id,
         username: user.username,
         email: user.email,
-        facebook_profile_url: user.facebook_profile_url
+        facebook_profile_url: user.facebook_profile_url,
+        email_verified: user.email_verified
       }
     });
   } catch (err) {
@@ -90,7 +214,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const userRes = await db.query(
-      `SELECT user_id, username, email, facebook_profile_url, notification_prefs
+      `SELECT user_id, username, email, facebook_profile_url, notification_prefs, email_verified
        FROM users
        WHERE user_id = $1`,
       [req.user.user_id]
@@ -173,21 +297,16 @@ router.post('/forgot-password', async (req, res) => {
   }
 
   try {
-    // Check if user exists
     const userRes = await db.query('SELECT user_id, username FROM users WHERE email = $1', [email]);
     if (userRes.rows.length === 0) {
-      // For security, don't reveal that email doesn't exist
       return res.status(200).json({ message: 'If an account exists with that email, a reset link has been sent.' });
     }
 
     const user = userRes.rows[0];
-    
-    // Generate reset token (expires in 1 hour)
     const resetToken = generateResetToken();
     const tokenExpiry = new Date();
     tokenExpiry.setHours(tokenExpiry.getHours() + 1);
 
-    // Create password_resets table if not exists
     await db.query(`
       CREATE TABLE IF NOT EXISTS password_resets (
         id SERIAL PRIMARY KEY,
@@ -199,26 +318,21 @@ router.post('/forgot-password', async (req, res) => {
       )
     `);
 
-    // Delete any existing unused tokens for this user
     await db.query('DELETE FROM password_resets WHERE user_id = $1 AND used = FALSE', [user.user_id]);
-    
-    // Insert new token
     await db.query(
       'INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1, $2, $3)',
       [user.user_id, resetToken, tokenExpiry]
     );
 
-    // ✅ UPDATED: Use your custom domain for reset links
     const isLocalhost = req.get('host').includes('localhost') || req.get('host').includes('127.0.0.1');
     const frontendUrl = isLocalhost 
       ? 'http://localhost:3000'
-      : 'https://creatorcooptechnologies.com';  // 👈 YOUR NEW CUSTOM DOMAIN
+      : 'https://creatorcooptechnologies.com';
     
     const resetLink = `${frontendUrl}/reset-password.html?token=${resetToken}&email=${encodeURIComponent(email)}`;
     
     const isProduction = process.env.NODE_ENV === 'production';
 
-    // Send email via Brevo (production) or log to console (development)
     if (isProduction && process.env.BREVO_API_KEY) {
       const emailResult = await sendResetPasswordEmail(email, resetLink, user.username);
       if (emailResult.success) {
@@ -228,13 +342,11 @@ router.post('/forgot-password', async (req, res) => {
         });
       } else {
         console.error(`❌ Failed to send reset email to ${email}:`, emailResult.error);
-        // Still return success for security, but log error internally
         res.status(200).json({ 
           message: 'If an account exists with that email, a reset link has been sent to your inbox.'
         });
       }
     } else {
-      // Development mode: log the reset link to console
       console.log('\n🔐 ===== PASSWORD RESET LINK (DEVELOPMENT) =====');
       console.log(`Email: ${email}`);
       console.log(`Reset Link: ${resetLink}`);
@@ -266,7 +378,6 @@ router.post('/reset-password', async (req, res) => {
   }
 
   try {
-    // Find valid reset token
     const resetRes = await db.query(
       `SELECT pr.user_id, pr.token, pr.expires_at, pr.used, u.email
        FROM password_resets pr
@@ -290,15 +401,10 @@ router.post('/reset-password', async (req, res) => {
     }
 
     const userId = record.user_id;
-
-    // Hash new password
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(new_password, salt);
 
-    // Update password
     await db.query('UPDATE users SET password_hash = $1 WHERE user_id = $2', [passwordHash, userId]);
-
-    // Mark token as used
     await db.query('UPDATE password_resets SET used = TRUE WHERE user_id = $1 AND token = $2', [userId, token]);
 
     console.log(`✅ Password reset successfully for user ${userId} (${email})`);
