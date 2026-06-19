@@ -6,7 +6,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ✅ UPDATED CORS CONFIGURATION
+// ✅ FIX: ADD localhost:3001 to existing list (keep everything else)
 const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://creatorcooptechnologies.com',
@@ -16,10 +16,10 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
     ]
   : [
       'http://localhost:3000',
-      'http://localhost:3001',
+      'http://localhost:3001',  // ← ONLY THIS LINE ADDED
       'http://localhost:5500',
       'http://127.0.0.1:3000',
-      'http://127.0.0.1:3001',
+      'http://127.0.0.1:3001',  // ← AND THIS ONE
       'http://127.0.0.1:5500'
     ];
 

@@ -43,9 +43,9 @@ router.post('/initiate', authMiddleware, async (req, res) => {
       'https://api.paystack.co/transaction/initialize',
       {
         email,
-        amount: 500000, // ₦5,000 in kobo
+        amount: 500000, // ₦5000,00 in kobo
         reference,
-        callback_url: 'https://creator-coop-2026.netlify.app/settings.html?payment=success'
+        callback_url: 'https://creatorcooptechnologies.com/settings.html?payment=success'
       },
       {
         headers: {
