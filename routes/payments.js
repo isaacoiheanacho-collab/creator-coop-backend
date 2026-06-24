@@ -43,7 +43,7 @@ router.post('/initiate', authMiddleware, async (req, res) => {
       'https://api.paystack.co/transaction/initialize',
       {
         email,
-        amount: 500000, // ₦5000,00 in kobo
+        amount: 250000, // ₦2500,00 in kobo
         reference,
         callback_url: 'https://creatorcooptechnologies.com/settings.html?payment=success'
       },
@@ -86,8 +86,8 @@ router.post('/webhook', express.json(), async (req, res) => {
       const { customer, reference, amount } = event.data;
       const email = customer.email;
 
-      if (amount !== 500000) {
-        console.warn(`⚠️ FRAUD WARNING: Payment rejected. Email ${email} attempted to pay ${amount} Kobo instead of 500000.`);
+      if (amount !== 250000) {
+        console.warn(`⚠️ FRAUD WARNING: Payment rejected. Email ${email} attempted to pay ${amount} Kobo instead of 250000.`);
         return res.status(400).json({ error: 'Fraud detected. Incorrect transaction value.' });
       }
 
