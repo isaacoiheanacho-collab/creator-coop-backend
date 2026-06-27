@@ -25,7 +25,6 @@ function generateOTP() {
 router.post('/register', async (req, res) => {
   const { username, email, password, social_profile_url } = req.body;
   
-  // ✅ Updated: Accept social_profile_url instead of facebook_profile_url
   if (!username || !email || !password || !social_profile_url) {
     return res.status(400).json({ error: 'All fields are required. Social profile URL is mandatory.' });
   }
@@ -154,7 +153,9 @@ router.post('/verify-email', async (req, res) => {
   }
 });
 
+// ============================================================
 // POST /api/auth/login
+// ============================================================
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
@@ -179,11 +180,30 @@ router.post('/login', async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ error: 'Invalid credentials.' });
     }
+
+    // Generate token
     const token = jwt.sign(
       { user_id: user.user_id },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
+
+    // NEW: Invalidate all previous sessions for this user
+    await db.query(
+      'UPDATE user_sessions SET is_active = FALSE WHERE user_id = $1',
+      [user.user_id]
+    );
+
+    // NEW: Store the new session
+    const userAgent = req.headers['user-agent'] || 'Unknown device';
+    const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'Unknown IP';
+    
+    await db.query(
+      `INSERT INTO user_sessions (user_id, token, device_info, ip_address)
+       VALUES ($1, $2, $3, $4)`,
+      [user.user_id, token, userAgent, ipAddress]
+    );
+
     res.status(200).json({
       message: 'Login successful!',
       token,
@@ -201,7 +221,27 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// ============================================================
+// POST /api/auth/logout
+// ============================================================
+router.post('/logout', authMiddleware, async (req, res) => {
+  try {
+    // Deactivate the current session
+    await db.query(
+      'UPDATE user_sessions SET is_active = FALSE WHERE token = $1',
+      [req.token]
+    );
+    
+    res.status(200).json({ message: 'Logged out successfully.' });
+  } catch (err) {
+    console.error('Logout error:', err);
+    res.status(500).json({ error: 'Server error during logout.' });
+  }
+});
+
+// ============================================================
 // GET /api/auth/me
+// ============================================================
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const userRes = await db.query(
@@ -233,7 +273,9 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
 // POST /api/auth/update-profile
+// ============================================================
 router.post('/update-profile', authMiddleware, async (req, res) => {
   const { username, social_profile_url, phone, country, social_links } = req.body;
   const { user_id } = req.user;
@@ -256,7 +298,9 @@ router.post('/update-profile', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
 // POST /api/auth/change-password
+// ============================================================
 router.post('/change-password', authMiddleware, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const { user_id } = req.user;
@@ -285,7 +329,9 @@ router.post('/change-password', authMiddleware, async (req, res) => {
   }
 });
 
-// ==================== PASSWORD RESET ====================
+// ============================================================
+// PASSWORD RESET
+// ============================================================
 
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
