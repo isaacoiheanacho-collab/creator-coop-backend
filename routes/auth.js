@@ -11,16 +11,10 @@ const { sendResetPasswordEmail, sendVerificationEmail } = require('../utils/emai
 
 // ==================== HELPER FUNCTIONS ====================
 
-/**
- * Generate a secure random token for password reset
- */
 function generateResetToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-/**
- * Generate a 6-digit OTP
- */
 function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
@@ -29,23 +23,29 @@ function generateOTP() {
 
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
-  const { username, email, password, facebook_profile_url } = req.body;
-  if (!username || !email || !password || !facebook_profile_url) {
-    return res.status(400).json({ error: 'All fields are required.' });
+  const { username, email, password, social_profile_url } = req.body;
+  
+  // ✅ Updated: Accept social_profile_url instead of facebook_profile_url
+  if (!username || !email || !password || !social_profile_url) {
+    return res.status(400).json({ error: 'All fields are required. Social profile URL is mandatory.' });
   }
+  
   try {
     const userExist = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (userExist.rows.length > 0) {
       return res.status(400).json({ error: 'Email already exists.' });
     }
+    
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
+    
     const newUser = await db.query(
-      `INSERT INTO users (username, email, password_hash, facebook_profile_url, email_verified)
+      `INSERT INTO users (username, email, password_hash, social_profile_url, email_verified)
        VALUES ($1, $2, $3, $4, FALSE)
-       RETURNING user_id, username, email, facebook_profile_url`,
-      [username, email, passwordHash, facebook_profile_url]
+       RETURNING user_id, username, email, social_profile_url`,
+      [username, email, passwordHash, social_profile_url]
     );
+    
     res.status(201).json({
       message: 'Registration successful! Please verify your email.',
       user: newUser.rows[0]
@@ -56,7 +56,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// POST /api/auth/send-verification - Send OTP for email verification
+// POST /api/auth/send-verification
 router.post('/send-verification', async (req, res) => {
   const { email } = req.body;
   
@@ -79,9 +79,8 @@ router.post('/send-verification', async (req, res) => {
     }
 
     const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-    // Create email_verifications table if not exists
     await db.query(`
       CREATE TABLE IF NOT EXISTS email_verifications (
         id SERIAL PRIMARY KEY,
@@ -93,16 +92,13 @@ router.post('/send-verification', async (req, res) => {
       )
     `);
     
-    // Delete old OTPs for this email
     await db.query('DELETE FROM email_verifications WHERE email = $1 AND used = FALSE', [email]);
     
-    // Store new OTP
     await db.query(
       'INSERT INTO email_verifications (email, otp, expires_at) VALUES ($1, $2, $3)',
       [email, otp, expiresAt]
     );
 
-    // Send verification email
     const emailResult = await sendVerificationEmail(email, otp, userCheck.rows[0].username);
     
     if (emailResult.success) {
@@ -119,7 +115,7 @@ router.post('/send-verification', async (req, res) => {
   }
 });
 
-// POST /api/auth/verify-email - Verify OTP and mark email as verified
+// POST /api/auth/verify-email
 router.post('/verify-email', async (req, res) => {
   const { email, otp } = req.body;
   
@@ -128,7 +124,6 @@ router.post('/verify-email', async (req, res) => {
   }
 
   try {
-    // Check if OTP is valid
     const otpCheck = await db.query(
       `SELECT id, expires_at FROM email_verifications 
        WHERE email = $1 AND otp = $2 AND used = FALSE
@@ -146,10 +141,7 @@ router.post('/verify-email', async (req, res) => {
       return res.status(400).json({ error: 'Verification code has expired. Please request a new one.' });
     }
     
-    // Mark OTP as used
     await db.query('UPDATE email_verifications SET used = TRUE WHERE id = $1', [record.id]);
-    
-    // Mark user as verified
     await db.query('UPDATE users SET email_verified = TRUE WHERE email = $1', [email]);
     
     res.json({ 
@@ -175,7 +167,6 @@ router.post('/login', async (req, res) => {
     }
     const user = userQuery.rows[0];
     
-    // ✅ Check if email is verified
     if (!user.email_verified) {
       return res.status(401).json({ 
         error: 'Please verify your email before logging in. Check your inbox for the verification code.',
@@ -200,7 +191,7 @@ router.post('/login', async (req, res) => {
         id: user.user_id,
         username: user.username,
         email: user.email,
-        facebook_profile_url: user.facebook_profile_url,
+        social_profile_url: user.social_profile_url,
         email_verified: user.email_verified
       }
     });
@@ -210,11 +201,12 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// GET /api/auth/me – returns user + subscription status + expiry
+// GET /api/auth/me
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const userRes = await db.query(
-      `SELECT user_id, username, email, facebook_profile_url, notification_prefs, email_verified
+      `SELECT user_id, username, email, social_profile_url, notification_prefs, 
+              email_verified, country, phone, social_links
        FROM users
        WHERE user_id = $1`,
       [req.user.user_id]
@@ -241,14 +233,21 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/auth/update-profile – update username and Facebook profile URL
+// POST /api/auth/update-profile
 router.post('/update-profile', authMiddleware, async (req, res) => {
-  const { username, facebook_profile_url } = req.body;
+  const { username, social_profile_url, phone, country, social_links } = req.body;
   const { user_id } = req.user;
+  
   try {
     await db.query(
-      'UPDATE users SET username = $1, facebook_profile_url = $2 WHERE user_id = $3',
-      [username, facebook_profile_url, user_id]
+      `UPDATE users SET 
+        username = COALESCE($1, username),
+        social_profile_url = COALESCE($2, social_profile_url),
+        phone = COALESCE($3, phone),
+        country = COALESCE($4, country),
+        social_links = COALESCE($5, social_links)
+       WHERE user_id = $6`,
+      [username, social_profile_url, phone, country, social_links, user_id]
     );
     res.json({ message: 'Profile updated successfully' });
   } catch (err) {
@@ -286,9 +285,8 @@ router.post('/change-password', authMiddleware, async (req, res) => {
   }
 });
 
-// ==================== PASSWORD RESET (TOKEN-BASED WITH EMAIL) ====================
+// ==================== PASSWORD RESET ====================
 
-// POST /api/auth/forgot-password - Generate reset token and send email
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   
@@ -366,7 +364,6 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
-// POST /api/auth/reset-password - Reset password using token
 router.post('/reset-password', async (req, res) => {
   const { token, email, new_password } = req.body;
   
