@@ -170,7 +170,7 @@ router.post('/login', async (req, res) => {
     
     if (!user.email_verified) {
       return res.status(401).json({ 
-        error: 'Please verify your email before logging in. Check your inbox for the verification code.',
+        error: 'Please verify your email before logging in.',
         needs_verification: true,
         email: user.email
       });
@@ -181,6 +181,22 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid credentials.' });
     }
 
+    // Check if there's an active session for this user
+    const activeSession = await db.query(
+      'SELECT id, device_info FROM user_sessions WHERE user_id = $1 AND is_active = TRUE',
+      [user.user_id]
+    );
+
+    if (activeSession.rows.length > 0) {
+      // Return 409 Conflict with device info
+      return res.status(409).json({
+        error: 'Account already logged in on another device.',
+        code: 'ALREADY_LOGGED_IN',
+        device: activeSession.rows[0].device_info || 'Unknown device',
+        session_id: activeSession.rows[0].id
+      });
+    }
+
     // Generate token
     const token = jwt.sign(
       { user_id: user.user_id },
@@ -188,13 +204,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    // NEW: Invalidate all previous sessions for this user
-    await db.query(
-      'UPDATE user_sessions SET is_active = FALSE WHERE user_id = $1',
-      [user.user_id]
-    );
-
-    // NEW: Store the new session
+    // Store the new session
     const userAgent = req.headers['user-agent'] || 'Unknown device';
     const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'Unknown IP';
     
@@ -216,7 +226,76 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error(err.message);
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Server error during login.' });
+  }
+});
+
+// ============================================================
+// POST /api/auth/force-login
+// ============================================================
+router.post('/force-login', async (req, res) => {
+  const { email, password } = req.body;
+  
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password required.' });
+  }
+  
+  try {
+    const userQuery = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (userQuery.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid credentials.' });
+    }
+    const user = userQuery.rows[0];
+    
+    if (!user.email_verified) {
+      return res.status(401).json({ 
+        error: 'Please verify your email before logging in.',
+        needs_verification: true,
+        email: user.email
+      });
+    }
+    
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Invalid credentials.' });
+    }
+
+    // Invalidate ALL previous sessions for this user
+    await db.query(
+      'UPDATE user_sessions SET is_active = FALSE WHERE user_id = $1',
+      [user.user_id]
+    );
+
+    // Generate new token
+    const token = jwt.sign(
+      { user_id: user.user_id },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    const userAgent = req.headers['user-agent'] || 'Unknown device';
+    const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'Unknown IP';
+    
+    await db.query(
+      `INSERT INTO user_sessions (user_id, token, device_info, ip_address)
+       VALUES ($1, $2, $3, $4)`,
+      [user.user_id, token, userAgent, ipAddress]
+    );
+
+    res.status(200).json({
+      message: 'Login successful! Previous session terminated.',
+      token,
+      user: {
+        id: user.user_id,
+        username: user.username,
+        email: user.email,
+        social_profile_url: user.social_profile_url,
+        email_verified: user.email_verified
+      }
+    });
+  } catch (err) {
+    console.error('Force login error:', err.message);
     res.status(500).json({ error: 'Server error during login.' });
   }
 });
