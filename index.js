@@ -47,12 +47,14 @@ const linkRoutes = require('./routes/links');
 const paymentRoutes = require('./routes/payments');
 const profileRoutes = require('./routes/profile');
 const boostRoutes = require('./routes/boosts');
+const adminRoutes = require('./routes/admin');  // ← ADDED
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/boosts', boostRoutes);
+app.use('/api/admin', adminRoutes);  // ← ADDED
 
 // Health check
 app.get('/api/health', async (req, res) => {
