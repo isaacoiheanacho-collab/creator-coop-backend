@@ -11,7 +11,7 @@ router.post('/boost', authMiddleware, async (req, res) => {
   const { user_id } = req.user;
 
   if (!link_url) {
-    return res.status(400).json({ error: 'Please provide a valid Facebook content link URL.' });
+    return res.status(400).json({ error: 'Please provide a valid content link URL.' });
   }
 
   try {
@@ -51,6 +51,47 @@ router.post('/boost', authMiddleware, async (req, res) => {
        RETURNING link_id, creator_id, link_url, created_at`,
       [user_id, link_url]
     );
+
+    // ============================================================
+    // 4. NOTIFICATION: Emit new-boost event to all active users
+    // ============================================================
+    try {
+      const io = req.app.get('io');
+      const activeUsers = req.app.get('activeUsers');
+
+      // Get creator username
+      const creatorResult = await db.query(
+        'SELECT username FROM users WHERE user_id = $1',
+        [user_id]
+      );
+      const creatorName = creatorResult.rows[0]?.username || 'Someone';
+
+      let notifiedCount = 0;
+
+      // Get all users except the creator
+      const allUsers = await db.query(
+        'SELECT user_id FROM users WHERE user_id != $1',
+        [user_id]
+      );
+
+      allUsers.rows.forEach(user => {
+        const socketId = activeUsers.get(user.user_id);
+        if (socketId) {
+          io.to(socketId).emit('new-boost', {
+            creator: creatorName,
+            link_id: newLink.rows[0].link_id,
+            message: `${creatorName} just shared a new boost! 🚀`,
+            timestamp: new Date().toISOString()
+          });
+          notifiedCount++;
+        }
+      });
+
+      console.log(`📢 Notification sent to ${notifiedCount} active users about ${creatorName}'s boost`);
+    } catch (notifError) {
+      console.error('Notification error:', notifError);
+      // Don't fail the boost submission if notification fails
+    }
 
     res.status(201).json({
       message: 'Your boost link has been added to the cooperative loop!',

@@ -1,12 +1,64 @@
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 const db = require('./db');
 require('dotenv').config();
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 
-// ✅ FIX: ADD localhost:3001 to existing list (keep everything else)
+// ============================================================
+// SOCKET.IO SETUP
+// ============================================================
+const io = new Server(server, {
+  cors: {
+    origin: process.env.NODE_ENV === 'production'
+      ? ['https://creatorcooptechnologies.com', 'https://www.creatorcooptechnologies.com']
+      : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5500'],
+    credentials: true,
+    methods: ['GET', 'POST']
+  }
+});
+
+// Store active users: Map<user_id, socket_id>
+const activeUsers = new Map();
+
+io.on('connection', (socket) => {
+  console.log('🟢 New client connected:', socket.id);
+
+  // Register user when they connect
+  socket.on('register-user', (userId) => {
+    if (userId) {
+      activeUsers.set(userId, socket.id);
+      console.log(`👤 User ${userId} registered (${activeUsers.size} online)`);
+    }
+  });
+
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    let disconnectedUser = null;
+    for (const [userId, socketId] of activeUsers.entries()) {
+      if (socketId === socket.id) {
+        disconnectedUser = userId;
+        activeUsers.delete(userId);
+        break;
+      }
+    }
+    if (disconnectedUser) {
+      console.log(`🔴 User ${disconnectedUser} disconnected (${activeUsers.size} online)`);
+    }
+  });
+});
+
+// Make io and activeUsers available to routes
+app.set('io', io);
+app.set('activeUsers', activeUsers);
+
+// ============================================================
+// CORS
+// ============================================================
 const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://creatorcooptechnologies.com',
@@ -16,16 +68,15 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
     ]
   : [
       'http://localhost:3000',
-      'http://localhost:3001',  // ← ONLY THIS LINE ADDED
+      'http://localhost:3001',
       'http://localhost:5500',
       'http://127.0.0.1:3000',
-      'http://127.0.0.1:3001',  // ← AND THIS ONE
+      'http://127.0.0.1:3001',
       'http://127.0.0.1:5500'
     ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -41,20 +92,22 @@ app.use(cors({
 
 app.use(express.json());
 
-// Routes
+// ============================================================
+// ROUTES
+// ============================================================
 const authRoutes = require('./routes/auth');
 const linkRoutes = require('./routes/links');
 const paymentRoutes = require('./routes/payments');
 const profileRoutes = require('./routes/profile');
 const boostRoutes = require('./routes/boosts');
-const adminRoutes = require('./routes/admin');  // ← ADDED
+const adminRoutes = require('./routes/admin');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/boosts', boostRoutes);
-app.use('/api/admin', adminRoutes);  // ← ADDED
+app.use('/api/admin', adminRoutes);
 
 // Health check
 app.get('/api/health', async (req, res) => {
@@ -71,6 +124,9 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+// ============================================================
+// START SERVER
+// ============================================================
+server.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
 });
