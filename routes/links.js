@@ -53,12 +53,9 @@ router.post('/boost', authMiddleware, async (req, res) => {
     );
 
     // ============================================================
-    // 4. NOTIFICATION: Emit new-boost event to all active users
+    // 4. SAVE NOTIFICATION TO DATABASE (for offline users)
     // ============================================================
     try {
-      const io = req.app.get('io');
-      const activeUsers = req.app.get('activeUsers');
-
       // Get creator username
       const creatorResult = await db.query(
         'SELECT username FROM users WHERE user_id = $1',
@@ -66,28 +63,51 @@ router.post('/boost', authMiddleware, async (req, res) => {
       );
       const creatorName = creatorResult.rows[0]?.username || 'Someone';
 
-      let notifiedCount = 0;
-
       // Get all users except the creator
       const allUsers = await db.query(
         'SELECT user_id FROM users WHERE user_id != $1',
         [user_id]
       );
 
-      allUsers.rows.forEach(user => {
-        const socketId = activeUsers.get(user.user_id);
-        if (socketId) {
-          io.to(socketId).emit('new-boost', {
-            creator: creatorName,
-            link_id: newLink.rows[0].link_id,
-            message: `${creatorName} just shared a new boost! 🚀`,
-            timestamp: new Date().toISOString()
-          });
-          notifiedCount++;
-        }
-      });
+      // Insert notification for each user
+      for (const user of allUsers.rows) {
+        await db.query(
+          `INSERT INTO notifications (user_id, link_id, creator_id, creator_name, message)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [user.user_id, newLink.rows[0].link_id, user_id, creatorName, `${creatorName} shared a new boost! 🚀`]
+        );
+      }
 
-      console.log(`📢 Notification sent to ${notifiedCount} active users about ${creatorName}'s boost`);
+      console.log(`📝 Notifications saved for ${allUsers.rows.length} users about ${creatorName}'s boost`);
+
+      // ============================================================
+      // 5. REAL-TIME NOTIFICATION (for online users)
+      // ============================================================
+      try {
+        const io = req.app.get('io');
+        const activeUsers = req.app.get('activeUsers');
+
+        let notifiedCount = 0;
+
+        allUsers.rows.forEach(user => {
+          const socketId = activeUsers.get(user.user_id);
+          if (socketId) {
+            io.to(socketId).emit('new-boost', {
+              creator: creatorName,
+              link_id: newLink.rows[0].link_id,
+              message: `${creatorName} just shared a new boost! 🚀`,
+              timestamp: new Date().toISOString()
+            });
+            notifiedCount++;
+          }
+        });
+
+        console.log(`📢 Real-time notification sent to ${notifiedCount} active users`);
+      } catch (socketError) {
+        console.error('Socket notification error:', socketError);
+        // Don't fail the boost submission if socket notification fails
+      }
+
     } catch (notifError) {
       console.error('Notification error:', notifError);
       // Don't fail the boost submission if notification fails
@@ -101,6 +121,66 @@ router.post('/boost', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Server error during link submission.' });
+  }
+});
+
+// ============================================================
+// GET /api/links/notifications – get unread notifications
+// ============================================================
+router.get('/notifications', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT id, message, link_id, created_at, is_read, creator_name
+       FROM notifications
+       WHERE user_id = $1 AND is_read = FALSE
+       ORDER BY created_at DESC`,
+      [req.user.user_id]
+    );
+    res.json({ 
+      notifications: result.rows, 
+      count: result.rows.length 
+    });
+  } catch (err) {
+    console.error('Get notifications error:', err);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+// ============================================================
+// POST /api/links/notifications/read – mark notification as read
+// ============================================================
+router.post('/notifications/read', authMiddleware, async (req, res) => {
+  const { notification_id } = req.body;
+  
+  if (!notification_id) {
+    return res.status(400).json({ error: 'notification_id is required' });
+  }
+
+  try {
+    await db.query(
+      'UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2',
+      [notification_id, req.user.user_id]
+    );
+    res.json({ message: 'Notification marked as read' });
+  } catch (err) {
+    console.error('Mark notification read error:', err);
+    res.status(500).json({ error: 'Failed to mark notification as read' });
+  }
+});
+
+// ============================================================
+// POST /api/links/notifications/read-all – mark all as read
+// ============================================================
+router.post('/notifications/read-all', authMiddleware, async (req, res) => {
+  try {
+    await db.query(
+      'UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE',
+      [req.user.user_id]
+    );
+    res.json({ message: 'All notifications marked as read' });
+  } catch (err) {
+    console.error('Mark all read error:', err);
+    res.status(500).json({ error: 'Failed to mark all notifications as read' });
   }
 });
 
