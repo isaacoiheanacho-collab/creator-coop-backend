@@ -52,24 +52,23 @@ router.post('/boost', authMiddleware, async (req, res) => {
       [user_id, link_url]
     );
 
+    // Get creator username (needed for notifications)
+    const creatorResult = await db.query(
+      'SELECT username FROM users WHERE user_id = $1',
+      [user_id]
+    );
+    const creatorName = creatorResult.rows[0]?.username || 'Someone';
+
+    // Get all users except the creator
+    const allUsers = await db.query(
+      'SELECT user_id FROM users WHERE user_id != $1',
+      [user_id]
+    );
+
     // ============================================================
     // 4. SAVE NOTIFICATION TO DATABASE (for offline users)
     // ============================================================
     try {
-      // Get creator username
-      const creatorResult = await db.query(
-        'SELECT username FROM users WHERE user_id = $1',
-        [user_id]
-      );
-      const creatorName = creatorResult.rows[0]?.username || 'Someone';
-
-      // Get all users except the creator
-      const allUsers = await db.query(
-        'SELECT user_id FROM users WHERE user_id != $1',
-        [user_id]
-      );
-
-      // Insert notification for each user
       for (const user of allUsers.rows) {
         await db.query(
           `INSERT INTO notifications (user_id, link_id, creator_id, creator_name, message)
@@ -77,40 +76,56 @@ router.post('/boost', authMiddleware, async (req, res) => {
           [user.user_id, newLink.rows[0].link_id, user_id, creatorName, `${creatorName} shared a new boost! 🚀`]
         );
       }
-
       console.log(`📝 Notifications saved for ${allUsers.rows.length} users about ${creatorName}'s boost`);
+    } catch (dbError) {
+      console.error('Failed to save notifications to database:', dbError);
+    }
 
-      // ============================================================
-      // 5. REAL-TIME NOTIFICATION (for online users)
-      // ============================================================
-      try {
-        const io = req.app.get('io');
-        const activeUsers = req.app.get('activeUsers');
+    // ============================================================
+    // 5. REAL-TIME SOCKET NOTIFICATION (for online users)
+    // ============================================================
+    try {
+      const io = req.app.get('io');
+      const activeUsers = req.app.get('activeUsers');
 
-        let notifiedCount = 0;
+      let notifiedCount = 0;
 
-        allUsers.rows.forEach(user => {
-          const socketId = activeUsers.get(user.user_id);
-          if (socketId) {
-            io.to(socketId).emit('new-boost', {
-              creator: creatorName,
-              link_id: newLink.rows[0].link_id,
-              message: `${creatorName} just shared a new boost! 🚀`,
-              timestamp: new Date().toISOString()
-            });
-            notifiedCount++;
-          }
-        });
+      allUsers.rows.forEach(user => {
+        const socketId = activeUsers.get(user.user_id);
+        if (socketId) {
+          io.to(socketId).emit('new-boost', {
+            creator: creatorName,
+            link_id: newLink.rows[0].link_id,
+            message: `${creatorName} just shared a new boost! 🚀`,
+            timestamp: new Date().toISOString()
+          });
+          notifiedCount++;
+        }
+      });
 
-        console.log(`📢 Real-time notification sent to ${notifiedCount} active users`);
-      } catch (socketError) {
-        console.error('Socket notification error:', socketError);
-        // Don't fail the boost submission if socket notification fails
+      console.log(`📢 Real-time notification sent to ${notifiedCount} active users`);
+    } catch (socketError) {
+      console.error('Socket notification error:', socketError);
+    }
+
+    // ============================================================
+    // 6. WEB PUSH NOTIFICATIONS (for closed browsers)
+    // ============================================================
+    try {
+      const sendPushNotifications = req.app.get('sendPushNotifications');
+      
+      if (sendPushNotifications && typeof sendPushNotifications === 'function') {
+        const message = `${creatorName} shared a new boost! 🚀`;
+        const results = await sendPushNotifications(message);
+        const successCount = results.filter(r => r.success).length;
+        if (successCount > 0) {
+          console.log(`📱 Web Push notifications sent to ${successCount} devices`);
+        }
+      } else {
+        console.log('📱 Web Push notifications not configured');
       }
-
-    } catch (notifError) {
-      console.error('Notification error:', notifError);
-      // Don't fail the boost submission if notification fails
+    } catch (pushError) {
+      console.error('Web Push notification error:', pushError);
     }
 
     res.status(201).json({
@@ -184,7 +199,9 @@ router.post('/notifications/read-all', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
 // GET /api/links/last-post – fetch last post time for cooldown display
+// ============================================================
 router.get('/last-post', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
@@ -203,7 +220,9 @@ router.get('/last-post', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
 // GET /api/links/feed – show active tasks with creator username
+// ============================================================
 router.get('/feed', authMiddleware, async (req, res) => {
   const { user_id } = req.user;
 
@@ -232,7 +251,9 @@ router.get('/feed', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
 // POST /api/links/engage – atomic engagement + expiry check
+// ============================================================
 router.post('/engage', authMiddleware, async (req, res) => {
   const { link_id } = req.body;
   const { user_id } = req.user;

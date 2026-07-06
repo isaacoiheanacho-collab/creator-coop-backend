@@ -2,12 +2,24 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+const webPush = require('web-push');
 const db = require('./db');
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
+
+// ============================================================
+// WEB PUSH NOTIFICATIONS SETUP
+// ============================================================
+let pushSubscriptions = [];
+
+webPush.setVapidDetails(
+  'mailto:support@creatorcooptechnologies.com',
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY
+);
 
 // ============================================================
 // SOCKET.IO SETUP
@@ -22,13 +34,11 @@ const io = new Server(server, {
   }
 });
 
-// Store active users: Map<user_id, socket_id>
 const activeUsers = new Map();
 
 io.on('connection', (socket) => {
   console.log('🟢 New client connected:', socket.id);
 
-  // Register user when they connect
   socket.on('register-user', (userId) => {
     if (userId) {
       activeUsers.set(userId, socket.id);
@@ -36,7 +46,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnection
   socket.on('disconnect', () => {
     let disconnectedUser = null;
     for (const [userId, socketId] of activeUsers.entries()) {
@@ -52,7 +61,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Make io and activeUsers available to routes
 app.set('io', io);
 app.set('activeUsers', activeUsers);
 
@@ -93,6 +101,44 @@ app.use(cors({
 app.use(express.json());
 
 // ============================================================
+// PUSH NOTIFICATION ROUTES
+// ============================================================
+app.get('/api/notifications/vapid-public-key', (req, res) => {
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
+});
+
+app.post('/api/notifications/subscribe', (req, res) => {
+  const subscription = req.body;
+  pushSubscriptions.push(subscription);
+  console.log(`📱 Push subscription added (${pushSubscriptions.length} total)`);
+  res.json({ message: 'Subscribed successfully' });
+});
+
+// Function to send push notifications (accessible from routes)
+async function sendPushNotifications(message) {
+  const payload = JSON.stringify({
+    body: message,
+    url: 'https://creatorcooptechnologies.com/queue.html'
+  });
+
+  const results = [];
+  for (const subscription of pushSubscriptions) {
+    try {
+      await webPush.sendNotification(subscription, payload);
+      results.push({ success: true });
+    } catch (err) {
+      console.error('Push notification failed:', err.message);
+      results.push({ success: false, error: err.message });
+    }
+  }
+  return results;
+}
+
+// Make pushSubscriptions and sendPushNotifications available to routes
+app.set('pushSubscriptions', pushSubscriptions);
+app.set('sendPushNotifications', sendPushNotifications);
+
+// ============================================================
 // ROUTES
 // ============================================================
 const authRoutes = require('./routes/auth');
@@ -129,4 +175,5 @@ app.get('/api/health', async (req, res) => {
 // ============================================================
 server.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+  console.log(`📱 Push notifications enabled with VAPID keys`);
 });
