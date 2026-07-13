@@ -43,7 +43,7 @@ router.post('/initiate', authMiddleware, async (req, res) => {
       'https://api.paystack.co/transaction/initialize',
       {
         email,
-        amount: 250000, // ₦2500,00 in kobo
+        amount: 20000, // ₦200.00 in kobo (monthly subscription)
         reference,
         callback_url: 'https://creatorcooptechnologies.com/settings.html?payment=success'
       },
@@ -68,7 +68,7 @@ router.post('/initiate', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/payments/webhook – Paystack webhook handler (unchanged)
+// POST /api/payments/webhook – Paystack webhook handler
 router.post('/webhook', express.json(), async (req, res) => {
   try {
     const hash = crypto
@@ -86,8 +86,9 @@ router.post('/webhook', express.json(), async (req, res) => {
       const { customer, reference, amount } = event.data;
       const email = customer.email;
 
-      if (amount !== 250000) {
-        console.warn(`⚠️ FRAUD WARNING: Payment rejected. Email ${email} attempted to pay ${amount} Kobo instead of 250000.`);
+      // Validate amount: ₦200.00 = 20,000 kobo
+      if (amount !== 20000) {
+        console.warn(`⚠️ FRAUD WARNING: Payment rejected. Email ${email} attempted to pay ${amount} Kobo instead of 20000.`);
         return res.status(400).json({ error: 'Fraud detected. Incorrect transaction value.' });
       }
 
@@ -99,7 +100,8 @@ router.post('/webhook', express.json(), async (req, res) => {
 
       const userId = userQuery.rows[0].user_id;
       const now = new Date();
-      const expiresAt = new Date(now.setFullYear(now.getFullYear() + 1));
+      // Set expiry to 1 month from now (monthly subscription)
+      const expiresAt = new Date(now.setMonth(now.getMonth() + 1));
 
       await db.query(
         `INSERT INTO subscriptions (user_id, stripe_customer_id, status, expires_at)
@@ -115,7 +117,7 @@ router.post('/webhook', express.json(), async (req, res) => {
         [userId, reference, amount]
       );
 
-      console.log(`✅ Membership activated for user ${userId} until ${expiresAt}`);
+      console.log(`✅ Monthly membership activated for user ${userId} until ${expiresAt}`);
     }
 
     res.sendStatus(200);
