@@ -15,11 +15,44 @@ router.post('/trigger', async (req, res) => {
   }
 
   try {
-    const currentHour = new Date().getHours();
-    const totalCohorts = 6;
+    // ✅ FIX: Get current hour in UK time (Europe/London)
+    const currentHour = parseInt(
+      new Date().toLocaleString('en-GB', { 
+        timeZone: 'Europe/London', 
+        hour: '2-digit',
+        hour12: false 
+      })
+    );
     
-    // Map to 6 productive hours: 8AM, 10AM, 12PM, 2PM, 4PM, 6PM
-    const productiveHours = [8, 10, 12, 14, 16, 18];
+    // ============================================================
+    // HYBRID COHORT LOGIC - Dynamic sizing based on user count
+    // ============================================================
+    
+    // 1. Get total verified users
+    const userCountResult = await db.query(
+      'SELECT COUNT(*) FROM users WHERE email_verified = TRUE'
+    );
+    const totalUsers = parseInt(userCountResult.rows[0].count);
+    
+    // 2. Determine number of cohorts based on user count
+    let totalCohorts;
+    let productiveHours;
+    
+    if (totalUsers <= 500) {
+      // Small user base: 1 cohort at 10:00 AM
+      totalCohorts = 1;
+      productiveHours = [10];
+    } else if (totalUsers <= 1500) {
+      // Medium user base: 3 cohorts at 10AM, 2PM, 6PM
+      totalCohorts = 3;
+      productiveHours = [10, 14, 18];
+    } else {
+      // Large user base: 6 cohorts at 8AM, 10AM, 12PM, 2PM, 4PM, 6PM
+      totalCohorts = 6;
+      productiveHours = [8, 10, 12, 14, 16, 18];
+    }
+    
+    // 3. Check if current hour is a scheduled digest hour
     const cohortIndex = productiveHours.indexOf(currentHour);
     
     if (cohortIndex === -1) {
@@ -27,15 +60,18 @@ router.post('/trigger', async (req, res) => {
       return res.json({ 
         message: 'Not a scheduled digest hour', 
         currentHour,
-        scheduledHours: productiveHours 
+        scheduledHours: productiveHours,
+        totalCohorts,
+        totalUsers
       });
     }
 
     const cohort = cohortIndex;
 
-    console.log(`⏰ [Digest] Running for Cohort ${cohort} at ${currentHour}:00`);
+    console.log(`⏰ [Digest] Running for Cohort ${cohort} (${totalCohorts} total cohorts) at ${currentHour}:00 (UK time)`);
+    console.log(`📊 [Digest] Total verified users: ${totalUsers}, Cohorts: ${totalCohorts}`);
 
-    // 1. Get users in this cohort with unengaged links
+    // 4. Get users in this cohort with unengaged links
     const cohortUsers = await db.query(
       `SELECT 
         u.user_id,
@@ -59,17 +95,19 @@ router.post('/trigger', async (req, res) => {
       return res.json({ 
         message: 'No users with unengaged links', 
         cohort, 
-        users: 0 
+        users: 0,
+        totalCohorts,
+        totalUsers
       });
     }
 
     const userIds = cohortUsers.rows.map(u => u.user_id);
-    const totalUsers = cohortUsers.rows.length;
+    const totalUsersNotified = cohortUsers.rows.length;
     const totalUnengagedLinks = cohortUsers.rows.reduce((sum, u) => sum + parseInt(u.unengaged_count), 0);
 
-    console.log(`📊 [Digest] Cohort ${cohort}: ${totalUsers} users have ${totalUnengagedLinks} unengaged links`);
+    console.log(`📊 [Digest] Cohort ${cohort}: ${totalUsersNotified} users have ${totalUnengagedLinks} unengaged links`);
 
-    // 2. Insert personalized notifications
+    // 5. Insert personalized notifications
     const notificationValues = [];
     const placeholders = [];
     let paramIndex = 1;
@@ -87,14 +125,14 @@ router.post('/trigger', async (req, res) => {
       notificationValues
     );
 
-    // 3. Update last_digest_sent for these users
+    // 6. Update last_digest_sent for these users
     await db.query(
       `UPDATE users SET last_digest_sent = NOW() 
        WHERE user_id = ANY($1::int[])`,
       [userIds]
     );
 
-    // 4. Send Web Push (get from app)
+    // 7. Send Web Push (get from app)
     const sendPushNotifications = req.app.get('sendPushNotifications');
     if (sendPushNotifications && typeof sendPushNotifications === 'function') {
       const digestMessage = totalUnengagedLinks === 1
@@ -103,7 +141,7 @@ router.post('/trigger', async (req, res) => {
       
       try {
         await sendPushNotifications(digestMessage);
-        console.log(`📱 [Digest] Web push sent to Cohort ${cohort} (${totalUsers} users)`);
+        console.log(`📱 [Digest] Web push sent to Cohort ${cohort} (${totalUsersNotified} users)`);
       } catch (err) {
         console.error(`❌ [Digest] Push failed:`, err.message);
       }
@@ -112,7 +150,9 @@ router.post('/trigger', async (req, res) => {
     res.json({
       success: true,
       cohort,
-      users: totalUsers,
+      totalCohorts,
+      totalUsers,
+      users_notified: totalUsersNotified,
       unengaged_links: totalUnengagedLinks,
       timestamp: new Date().toISOString()
     });
