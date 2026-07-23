@@ -3,13 +3,12 @@ require('dotenv').config();
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-// Determine the connection string with pooler support
-let connectionString = process.env.DATABASE_URL;
+// ✅ Use the URL as-is - it already contains the pooler
+const connectionString = process.env.DATABASE_URL;
 
-// If in production and using Neon, use the connection pooler endpoint
-if (isProduction && connectionString && connectionString.includes('.neon.tech')) {
-  connectionString = connectionString.replace('.neon.tech', '-pooler.neon.tech');
-  console.log('🔗 Using Neon connection pooler for production');
+// ✅ Check if pooler is already in the URL (for logging only)
+if (isProduction && connectionString && connectionString.includes('-pooler.neon.tech')) {
+  console.log('🔗 Using Neon connection pooler (already in URL)');
 }
 
 // Configure the connection pool with optimized timeout settings for Neon free tier
