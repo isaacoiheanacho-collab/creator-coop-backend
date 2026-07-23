@@ -2,10 +2,13 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const authMiddleware = require('../authMiddleware');
+const cache = require('../utils/cache');
 
 const EXPIRATION_THRESHOLD_PERCENTAGE = 0.95; // 95% of active users must engage
 
+// ============================================================
 // POST /api/links/boost – one post per rolling 24 hours
+// ============================================================
 router.post('/boost', authMiddleware, async (req, res) => {
   const { link_url } = req.body;
   const { user_id } = req.user;
@@ -59,30 +62,27 @@ router.post('/boost', authMiddleware, async (req, res) => {
     );
     const creatorName = creatorResult.rows[0]?.username || 'Someone';
 
-    // Get all users except the creator
-    const allUsers = await db.query(
-      'SELECT user_id FROM users WHERE user_id != $1',
-      [user_id]
-    );
-
     // ============================================================
-    // 4. SAVE NOTIFICATION TO DATABASE (for offline users)
+    // 4. BATCH NOTIFICATIONS - OPTIMIZED (Single SQL, no JS loop)
+    //    This creates notification records for ALL users.
+    //    Web push is now handled by the hourly digest cron.
     // ============================================================
     try {
-      for (const user of allUsers.rows) {
-        await db.query(
-          `INSERT INTO notifications (user_id, link_id, creator_id, creator_name, message)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [user.user_id, newLink.rows[0].link_id, user_id, creatorName, `${creatorName} shared a new boost! 🚀`]
-        );
-      }
-      console.log(`📝 Notifications saved for ${allUsers.rows.length} users about ${creatorName}'s boost`);
+      await db.query(
+        `INSERT INTO notifications (user_id, link_id, creator_id, creator_name, message)
+         SELECT user_id, $1, $2, $3, $4
+         FROM users
+         WHERE user_id != $2`,
+        [newLink.rows[0].link_id, user_id, creatorName, `${creatorName} shared a new boost! 🚀`]
+      );
+      console.log(`📝 Batch notifications saved for all users about ${creatorName}'s boost`);
     } catch (dbError) {
       console.error('Failed to save notifications to database:', dbError);
     }
 
     // ============================================================
-    // 5. REAL-TIME SOCKET NOTIFICATION (for online users)
+    // 5. REAL-TIME SOCKET NOTIFICATION (for currently online users)
+    //    This stays - it's only for users already in the app
     // ============================================================
     try {
       const io = req.app.get('io');
@@ -90,8 +90,11 @@ router.post('/boost', authMiddleware, async (req, res) => {
 
       let notifiedCount = 0;
 
-      allUsers.rows.forEach(user => {
-        const socketId = activeUsers.get(user.user_id);
+      // Get active user IDs for socket notifications
+      const activeUserIds = Array.from(activeUsers.keys());
+      
+      activeUserIds.forEach(userId => {
+        const socketId = activeUsers.get(userId);
         if (socketId) {
           io.to(socketId).emit('new-boost', {
             creator: creatorName,
@@ -109,24 +112,19 @@ router.post('/boost', authMiddleware, async (req, res) => {
     }
 
     // ============================================================
-    // 6. WEB PUSH NOTIFICATIONS (for closed browsers)
+    // 6. WEB PUSH NOTIFICATIONS - REMOVED
+    //    Now handled by the hourly digest cron (services/digestCron.js)
+    //    Users will receive digest notifications for ALL active links
+    //    instead of instant notifications for each individual post.
+    //    This prevents traffic spikes and keeps Neon CU usage low.
     // ============================================================
-    try {
-      const sendPushNotifications = req.app.get('sendPushNotifications');
-      
-      if (sendPushNotifications && typeof sendPushNotifications === 'function') {
-        const message = `${creatorName} shared a new boost! 🚀`;
-        const results = await sendPushNotifications(message);
-        const successCount = results.filter(r => r.success).length;
-        if (successCount > 0) {
-          console.log(`📱 Web Push notifications sent to ${successCount} devices`);
-        }
-      } else {
-        console.log('📱 Web Push notifications not configured');
-      }
-    } catch (pushError) {
-      console.error('Web Push notification error:', pushError);
-    }
+    // Web push notifications are now sent via the hourly digest cron.
+    // The cron sends 1 digest notification per hour to 1/12th of users,
+    // spreading traffic evenly across 12 hours (2 rounds per 24 hours).
+    // ============================================================
+
+    // Invalidate feed caches for all users (since new boost is available)
+    await cache.invalidateCache('feed:*');
 
     res.status(201).json({
       message: 'Your boost link has been added to the cooperative loop!',
@@ -144,17 +142,33 @@ router.post('/boost', authMiddleware, async (req, res) => {
 // ============================================================
 router.get('/notifications', authMiddleware, async (req, res) => {
   try {
+    const cacheKey = `notifications:${req.user.user_id}`;
+    
+    // Try cache first
+    const cached = await cache.getCached(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    // Cache miss - query database
     const result = await db.query(
       `SELECT id, message, link_id, created_at, is_read, creator_name
        FROM notifications
        WHERE user_id = $1 AND is_read = FALSE
-       ORDER BY created_at DESC`,
+       ORDER BY created_at DESC
+       LIMIT 50`,
       [req.user.user_id]
     );
-    res.json({ 
-      notifications: result.rows, 
-      count: result.rows.length 
-    });
+
+    const response = {
+      notifications: result.rows,
+      count: result.rows.length
+    };
+
+    // Cache for 30 seconds
+    await cache.setCached(cacheKey, response, cache.CACHE_TTL.NOTIFICATIONS);
+    
+    res.json(response);
   } catch (err) {
     console.error('Get notifications error:', err);
     res.status(500).json({ error: 'Failed to fetch notifications' });
@@ -176,6 +190,10 @@ router.post('/notifications/read', authMiddleware, async (req, res) => {
       'UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2',
       [notification_id, req.user.user_id]
     );
+    
+    // Invalidate notifications cache
+    await cache.invalidateCache(`notifications:${req.user.user_id}`);
+    
     res.json({ message: 'Notification marked as read' });
   } catch (err) {
     console.error('Mark notification read error:', err);
@@ -192,6 +210,10 @@ router.post('/notifications/read-all', authMiddleware, async (req, res) => {
       'UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE',
       [req.user.user_id]
     );
+    
+    // Invalidate notifications cache
+    await cache.invalidateCache(`notifications:${req.user.user_id}`);
+    
     res.json({ message: 'All notifications marked as read' });
   } catch (err) {
     console.error('Mark all read error:', err);
@@ -221,30 +243,68 @@ router.get('/last-post', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/links/feed – show active tasks with creator username
+// GET /api/links/feed – show active tasks with pagination (OPTIMIZED)
 // ============================================================
 router.get('/feed', authMiddleware, async (req, res) => {
   const { user_id } = req.user;
+  const page = parseInt(req.query.page) || 1;
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+  const offset = (page - 1) * limit;
 
   try {
+    const cacheKey = `feed:${user_id}:page:${page}:limit:${limit}`;
+    
+    // Try cache first
+    const cached = await cache.getCached(cacheKey);
+    if (cached) {
+      return res.status(200).json(cached);
+    }
+
+    // OPTIMIZED: Use LEFT JOIN instead of NOT IN subquery
     const feedQuery = await db.query(
       `SELECT bl.link_id, bl.link_url, bl.created_at, u.username AS creator_username
        FROM boost_links bl
        JOIN users u ON bl.creator_id = u.user_id
+       LEFT JOIN completed_engagements ce 
+              ON ce.link_id = bl.link_id AND ce.user_id = $1
        WHERE bl.is_expired = FALSE
          AND bl.creator_id != $1
-         AND bl.link_id NOT IN (
-             SELECT link_id FROM completed_engagements WHERE user_id = $1
-         )
-       ORDER BY bl.created_at ASC`,
+         AND ce.link_id IS NULL
+       ORDER BY bl.created_at ASC
+       LIMIT $2 OFFSET $3`,
+      [user_id, limit, offset]
+    );
+
+    // Get total count for pagination metadata
+    const countResult = await db.query(
+      `SELECT COUNT(*) FROM boost_links bl
+       LEFT JOIN completed_engagements ce 
+              ON ce.link_id = bl.link_id AND ce.user_id = $1
+       WHERE bl.is_expired = FALSE
+         AND bl.creator_id != $1
+         AND ce.link_id IS NULL`,
       [user_id]
     );
 
-    res.status(200).json({
+    const total = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(total / limit);
+
+    const response = {
       message: 'Active tasks fetched successfully.',
       count: feedQuery.rows.length,
+      total: total,
+      page: page,
+      limit: limit,
+      totalPages: totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
       feed: feedQuery.rows
-    });
+    };
+
+    // Cache for 1 minute
+    await cache.setCached(cacheKey, response, cache.CACHE_TTL.BOOST_FEED);
+
+    res.status(200).json(response);
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Server error while generating task feed.' });
@@ -296,6 +356,9 @@ router.post('/engage', authMiddleware, async (req, res) => {
     );
 
     await db.query('COMMIT');
+
+    // Invalidate feed cache for this user
+    await cache.invalidateCache(`feed:${user_id}:*`);
 
     res.status(200).json({
       message: 'Engagement registered successfully!',

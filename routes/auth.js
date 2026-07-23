@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const jwt = require('jsonwebtoken');
 const authMiddleware = require('../authMiddleware');
+const cache = require('../utils/cache');
 
 // ==================== EMAIL SERVICE (Brevo) ====================
 const { sendResetPasswordEmail, sendVerificationEmail } = require('../utils/emailService');
@@ -181,20 +182,20 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid credentials.' });
     }
 
-    // Generate token
+    // Generate token (reduced from 7d to 1d for free tier optimization)
     const token = jwt.sign(
       { user_id: user.user_id },
       process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '1d' }
     );
 
-    // NEW: Invalidate all previous sessions for this user
+    // Invalidate all previous sessions for this user
     await db.query(
       'UPDATE user_sessions SET is_active = FALSE WHERE user_id = $1',
       [user.user_id]
     );
 
-    // NEW: Store the new session
+    // Store the new session
     const userAgent = req.headers['user-agent'] || 'Unknown device';
     const ipAddress = req.ip || req.headers['x-forwarded-for'] || 'Unknown IP';
     
@@ -203,6 +204,9 @@ router.post('/login', async (req, res) => {
        VALUES ($1, $2, $3, $4)`,
       [user.user_id, token, userAgent, ipAddress]
     );
+
+    // Invalidate user cache on new login
+    await cache.invalidateUserCache(user.user_id);
 
     res.status(200).json({
       message: 'Login successful!',
@@ -232,6 +236,9 @@ router.post('/logout', authMiddleware, async (req, res) => {
       [req.token]
     );
     
+    // Invalidate user cache on logout
+    await cache.invalidateUserCache(req.user.user_id);
+    
     res.status(200).json({ message: 'Logged out successfully.' });
   } catch (err) {
     console.error('Logout error:', err);
@@ -240,10 +247,22 @@ router.post('/logout', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/auth/me
+// GET /api/auth/me - Updated with Redis Caching
 // ============================================================
 router.get('/me', authMiddleware, async (req, res) => {
   try {
+    const cacheKey = `user:${req.user.user_id}:profile`;
+    
+    // Try cache first
+    const cached = await cache.getCached(cacheKey);
+    if (cached) {
+      console.log(`💾 Cache hit: ${cacheKey}`);
+      return res.json(cached);
+    }
+
+    console.log(`📊 Cache miss: ${cacheKey} - querying database`);
+
+    // Cache miss - query database
     const userRes = await db.query(
       `SELECT user_id, username, email, social_profile_url, notification_prefs, 
               email_verified, country, phone, social_links
@@ -251,22 +270,31 @@ router.get('/me', authMiddleware, async (req, res) => {
        WHERE user_id = $1`,
       [req.user.user_id]
     );
+    
     if (userRes.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
+
     const subRes = await db.query(
       `SELECT status, expires_at FROM subscriptions
        WHERE user_id = $1 AND status = 'active' AND expires_at > NOW()`,
       [req.user.user_id]
     );
+
     const subscription_active = subRes.rows.length > 0;
     const subscription_expiry = subscription_active ? subRes.rows[0].expires_at : null;
 
-    res.json({
+    const result = {
       user: userRes.rows[0],
       subscription_active,
       subscription_expiry
-    });
+    };
+
+    // Cache for 5 minutes
+    await cache.setCached(cacheKey, result, cache.CACHE_TTL.USER_PROFILE);
+    console.log(`💾 Cache set: ${cacheKey}`);
+    
+    res.json(result);
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Server error' });
@@ -274,7 +302,7 @@ router.get('/me', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/auth/update-profile
+// POST /api/auth/update-profile - Updated with Cache Invalidation
 // ============================================================
 router.post('/update-profile', authMiddleware, async (req, res) => {
   const { username, social_profile_url, phone, country, social_links } = req.body;
@@ -291,6 +319,11 @@ router.post('/update-profile', authMiddleware, async (req, res) => {
        WHERE user_id = $6`,
       [username, social_profile_url, phone, country, social_links, user_id]
     );
+    
+    // Invalidate user cache after profile update
+    await cache.invalidateUserCache(user_id);
+    console.log(`🗑️ Cache invalidated for user: ${user_id}`);
+    
     res.json({ message: 'Profile updated successfully' });
   } catch (err) {
     console.error(err);
@@ -321,6 +354,9 @@ router.post('/change-password', authMiddleware, async (req, res) => {
 
     const newHash = await bcrypt.hash(newPassword, 10);
     await db.query('UPDATE users SET password_hash = $1 WHERE user_id = $2', [newHash, user_id]);
+
+    // Invalidate user cache after password change
+    await cache.invalidateUserCache(user_id);
 
     res.json({ message: 'Password updated successfully' });
   } catch (err) {
@@ -449,6 +485,9 @@ router.post('/reset-password', async (req, res) => {
 
     await db.query('UPDATE users SET password_hash = $1 WHERE user_id = $2', [passwordHash, userId]);
     await db.query('UPDATE password_resets SET used = TRUE WHERE user_id = $1 AND token = $2', [userId, token]);
+
+    // Invalidate user cache after password reset
+    await cache.invalidateUserCache(userId);
 
     console.log(`✅ Password reset successfully for user ${userId} (${email})`);
 
