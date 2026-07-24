@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const authMiddleware = require('../authMiddleware');
 const cache = require('../utils/cache');
+const { cleanUrl, hasTrackingParams } = require('../utils/urlCleaner');
 
 const EXPIRATION_THRESHOLD_PERCENTAGE = 0.95; // 95% of active users must engage
 
@@ -15,6 +16,14 @@ router.post('/boost', authMiddleware, async (req, res) => {
 
   if (!link_url) {
     return res.status(400).json({ error: 'Please provide a valid content link URL.' });
+  }
+
+  // ✅ Clean the URL - remove tracking parameters
+  const sanitizedUrl = cleanUrl(link_url);
+  
+  // Log if tracking params were found (for monitoring)
+  if (hasTrackingParams(link_url)) {
+    console.log(`🔍 [UrlCleaner] Removed tracking params from: ${sanitizedUrl}`);
   }
 
   try {
@@ -47,12 +56,12 @@ router.post('/boost', authMiddleware, async (req, res) => {
       }
     }
 
-    // 3. Insert new link
+    // 3. Insert new link with cleaned URL
     const newLink = await db.query(
       `INSERT INTO boost_links (creator_id, link_url)
        VALUES ($1, $2)
        RETURNING link_id, creator_id, link_url, created_at`,
-      [user_id, link_url]
+      [user_id, sanitizedUrl]
     );
 
     // Get creator username (needed for notifications)
@@ -64,8 +73,6 @@ router.post('/boost', authMiddleware, async (req, res) => {
 
     // ============================================================
     // 4. BATCH NOTIFICATIONS - OPTIMIZED (Single SQL, no JS loop)
-    //    This creates notification records for ALL users.
-    //    Web push is now handled by the hourly digest cron.
     // ============================================================
     try {
       await db.query(
@@ -82,15 +89,12 @@ router.post('/boost', authMiddleware, async (req, res) => {
 
     // ============================================================
     // 5. REAL-TIME SOCKET NOTIFICATION (for currently online users)
-    //    This stays - it's only for users already in the app
     // ============================================================
     try {
       const io = req.app.get('io');
       const activeUsers = req.app.get('activeUsers');
 
       let notifiedCount = 0;
-
-      // Get active user IDs for socket notifications
       const activeUserIds = Array.from(activeUsers.keys());
       
       activeUserIds.forEach(userId => {
@@ -110,18 +114,6 @@ router.post('/boost', authMiddleware, async (req, res) => {
     } catch (socketError) {
       console.error('Socket notification error:', socketError);
     }
-
-    // ============================================================
-    // 6. WEB PUSH NOTIFICATIONS - REMOVED
-    //    Now handled by the hourly digest cron (services/digestCron.js)
-    //    Users will receive digest notifications for ALL active links
-    //    instead of instant notifications for each individual post.
-    //    This prevents traffic spikes and keeps Neon CU usage low.
-    // ============================================================
-    // Web push notifications are now sent via the hourly digest cron.
-    // The cron sends 1 digest notification per hour to 1/12th of users,
-    // spreading traffic evenly across 12 hours (2 rounds per 24 hours).
-    // ============================================================
 
     // Invalidate feed caches for all users (since new boost is available)
     await cache.invalidateCache('feed:*');
