@@ -27,15 +27,23 @@ router.post('/boost', authMiddleware, async (req, res) => {
   }
 
   try {
-    // 1. Check active subscription
-    const subCheck = await db.query(
-      `SELECT status FROM subscriptions
-       WHERE user_id = $1 AND status = 'active' AND expires_at > NOW()`,
-      [user_id]
-    );
-    if (subCheck.rows.length === 0) {
-      return res.status(402).json({ error: 'Active subscription required to post a boost link.' });
+    // ============================================================
+    // 1. Check active subscription (with feature flag)
+    // ============================================================
+    const SUBSCRIPTION_REQUIRED = process.env.SUBSCRIPTION_REQUIRED === 'true';
+
+    if (SUBSCRIPTION_REQUIRED) {
+      // Subscription is required - check database
+      const subCheck = await db.query(
+        `SELECT status FROM subscriptions
+         WHERE user_id = $1 AND status = 'active' AND expires_at > NOW()`,
+        [user_id]
+      );
+      if (subCheck.rows.length === 0) {
+        return res.status(402).json({ error: 'Active subscription required to post a boost link.' });
+      }
     }
+    // ✅ FREE MODE: Skip subscription check when SUBSCRIPTION_REQUIRED = false
 
     // 2. 24‑hour cooldown (rolling window)
     const lastPost = await db.query(

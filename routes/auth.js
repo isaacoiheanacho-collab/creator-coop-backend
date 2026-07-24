@@ -247,7 +247,7 @@ router.post('/logout', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/auth/me - Updated with Redis Caching
+// GET /api/auth/me - WITH FEATURE FLAG
 // ============================================================
 router.get('/me', authMiddleware, async (req, res) => {
   try {
@@ -275,14 +275,26 @@ router.get('/me', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const subRes = await db.query(
-      `SELECT status, expires_at FROM subscriptions
-       WHERE user_id = $1 AND status = 'active' AND expires_at > NOW()`,
-      [req.user.user_id]
-    );
+    // ✅ Check feature flag for subscription requirement
+    const SUBSCRIPTION_REQUIRED = process.env.SUBSCRIPTION_REQUIRED === 'true';
+    
+    let subscription_active = false;
+    let subscription_expiry = null;
 
-    const subscription_active = subRes.rows.length > 0;
-    const subscription_expiry = subscription_active ? subRes.rows[0].expires_at : null;
+    if (SUBSCRIPTION_REQUIRED) {
+      // Subscription is required - check database
+      const subRes = await db.query(
+        `SELECT status, expires_at FROM subscriptions
+         WHERE user_id = $1 AND status = 'active' AND expires_at > NOW()`,
+        [req.user.user_id]
+      );
+      subscription_active = subRes.rows.length > 0;
+      subscription_expiry = subscription_active ? subRes.rows[0].expires_at : null;
+    } else {
+      // ✅ FREE MODE: Everyone is active until 5,000 users
+      subscription_active = true;
+      subscription_expiry = null;
+    }
 
     const result = {
       user: userRes.rows[0],
