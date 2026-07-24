@@ -317,15 +317,13 @@ app.get('/api/health', async (req, res) => {
 
 // ============================================================
 // WAKE ENDPOINT - Pre-wake Render to prevent 503 errors
+// Returns 204 No Content to avoid "output too large" errors
 // ============================================================
 app.get('/api/wake', (req, res) => {
   const timestamp = new Date().toISOString();
   console.log(`⏰ [Wake] Render woken up at ${timestamp}`);
-  res.json({ 
-    status: 'awake', 
-    timestamp: timestamp,
-    message: 'Render is awake and ready for digest jobs'
-  });
+  // ✅ 204 No Content - minimal response, never too large
+  res.status(204).end();
 });
 
 // ============================================================
