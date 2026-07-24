@@ -292,7 +292,9 @@ app.use('/api/boosts', boostRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/digest', digestRoutes);
 
-// Health check
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 app.get('/api/health', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW()');
@@ -311,6 +313,19 @@ app.get('/api/health', async (req, res) => {
       cache: await cacheHealth()
     });
   }
+});
+
+// ============================================================
+// WAKE ENDPOINT - Pre-wake Render to prevent 503 errors
+// ============================================================
+app.get('/api/wake', (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log(`⏰ [Wake] Render woken up at ${timestamp}`);
+  res.json({ 
+    status: 'awake', 
+    timestamp: timestamp,
+    message: 'Render is awake and ready for digest jobs'
+  });
 });
 
 // ============================================================
