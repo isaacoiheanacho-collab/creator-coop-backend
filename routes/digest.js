@@ -15,7 +15,7 @@ router.post('/trigger', async (req, res) => {
   }
 
   try {
-    // ✅ FIX: Get current hour in UK time (Europe/London)
+    // ✅ Get current hour in UK time (Europe/London)
     const currentHour = parseInt(
       new Date().toLocaleString('en-GB', { 
         timeZone: 'Europe/London', 
@@ -71,29 +71,25 @@ router.post('/trigger', async (req, res) => {
     console.log(`⏰ [Digest] Running for Cohort ${cohort} (${totalCohorts} total cohorts) at ${currentHour}:00 (UK time)`);
     console.log(`📊 [Digest] Total verified users: ${totalUsers}, Cohorts: ${totalCohorts}`);
 
-    // 4. Get users in this cohort with unengaged links
+    // ============================================================
+    // 4. Get users in this cohort
+    //    Each user is assigned to ONE cohort based on their ID
+    //    User ID % totalCohorts = cohort assignment
+    // ============================================================
     const cohortUsers = await db.query(
       `SELECT 
-        u.user_id,
-        COUNT(bl.link_id) AS unengaged_count
+        u.user_id
        FROM users u
-       CROSS JOIN boost_links bl
-       LEFT JOIN completed_engagements ce 
-         ON ce.link_id = bl.link_id AND ce.user_id = u.user_id
        WHERE (u.user_id % $1) = $2
-         AND bl.is_expired = FALSE
-         AND ce.link_id IS NULL
          AND u.email_verified = TRUE
-         AND (u.last_digest_sent IS NULL OR u.last_digest_sent < NOW() - INTERVAL '24 hours')
-       GROUP BY u.user_id
-       HAVING COUNT(bl.link_id) > 0`,
+         AND (u.last_digest_sent IS NULL OR u.last_digest_sent < NOW() - INTERVAL '24 hours')`,
       [totalCohorts, cohort]
     );
 
     if (cohortUsers.rows.length === 0) {
-      console.log(`ℹ️ [Digest] No users in Cohort ${cohort} have unengaged links.`);
+      console.log(`ℹ️ [Digest] No users in Cohort ${cohort} need a reminder today.`);
       return res.json({ 
-        message: 'No users with unengaged links', 
+        message: 'No users need a reminder', 
         cohort, 
         users: 0,
         totalCohorts,
@@ -103,17 +99,19 @@ router.post('/trigger', async (req, res) => {
 
     const userIds = cohortUsers.rows.map(u => u.user_id);
     const totalUsersNotified = cohortUsers.rows.length;
-    const totalUnengagedLinks = cohortUsers.rows.reduce((sum, u) => sum + parseInt(u.unengaged_count), 0);
 
-    console.log(`📊 [Digest] Cohort ${cohort}: ${totalUsersNotified} users have ${totalUnengagedLinks} unengaged links`);
+    console.log(`📊 [Digest] Cohort ${cohort}: ${totalUsersNotified} users will receive a reminder`);
 
-    // 5. Insert personalized notifications
+    // ============================================================
+    // 5. Insert personalized daily reminder notifications
+    // ============================================================
     const notificationValues = [];
     const placeholders = [];
     let paramIndex = 1;
 
-    cohortUsers.rows.forEach(({ user_id, unengaged_count }) => {
-      const message = `🚀 You have ${unengaged_count} boost link(s) waiting in your feed!`;
+    cohortUsers.rows.forEach(({ user_id }) => {
+      // Daily reminder message - consistent for all users
+      const message = `🌞 Daily Reminder: Check your feed for new boost links!`;
       notificationValues.push(user_id, message);
       placeholders.push(`($${paramIndex}, $${paramIndex + 1})`);
       paramIndex += 2;
@@ -125,19 +123,22 @@ router.post('/trigger', async (req, res) => {
       notificationValues
     );
 
+    // ============================================================
     // 6. Update last_digest_sent for these users
+    //    Prevents them from getting another reminder for 24 hours
+    // ============================================================
     await db.query(
       `UPDATE users SET last_digest_sent = NOW() 
        WHERE user_id = ANY($1::int[])`,
       [userIds]
     );
 
-    // 7. Send Web Push (get from app)
+    // ============================================================
+    // 7. Send Web Push Notification
+    // ============================================================
     const sendPushNotifications = req.app.get('sendPushNotifications');
     if (sendPushNotifications && typeof sendPushNotifications === 'function') {
-      const digestMessage = totalUnengagedLinks === 1
-        ? `🚀 1 boost link is waiting in your feed!`
-        : `🚀 ${totalUnengagedLinks} boost links are waiting in your feed!`;
+      const digestMessage = `🌞 Daily Reminder: Check your feed for new boost links!`;
       
       try {
         await sendPushNotifications(digestMessage);
@@ -153,7 +154,6 @@ router.post('/trigger', async (req, res) => {
       totalCohorts,
       totalUsers,
       users_notified: totalUsersNotified,
-      unengaged_links: totalUnengagedLinks,
       timestamp: new Date().toISOString()
     });
 
