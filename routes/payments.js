@@ -1,12 +1,39 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const axios = require('axios');      // 👈 needed for Paystack API call
+const axios = require('axios');
 const db = require('../db');
 const authMiddleware = require('../authMiddleware');
 require('dotenv').config();
 
+// ============================================================
+// MILESTONE CHECK - 5,000 users required for payments
+// ============================================================
+async function check5kUserMilestone(req, res, next) {
+  try {
+    const userCountRes = await db.query('SELECT COUNT(*) FROM users');
+    const totalUsers = parseInt(userCountRes.rows[0].count, 10);
+
+    // If total users is under 5,000, suspend paid subscriptions
+    if (totalUsers < 5000) {
+      return res.status(403).json({
+        error: 'Creator Co-Op is currently 100% FREE for all early creators! Subscriptions will unlock once we reach 5,000 active creators.',
+        current_users: totalUsers,
+        required_users: 5000,
+        remaining: 5000 - totalUsers
+      });
+    }
+
+    next();
+  } catch (err) {
+    console.error('❌ Milestone check error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ============================================================
 // GET /api/payments/history – returns payment records for the logged-in user
+// ============================================================
 router.get('/history', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
@@ -23,8 +50,10 @@ router.get('/history', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/payments/initiate – create Paystack transaction and return redirect URL
-router.post('/initiate', authMiddleware, async (req, res) => {
+// ============================================================
+// POST /api/payments/initiate – create Paystack transaction (MILESTONE PROTECTED)
+// ============================================================
+router.post('/initiate', authMiddleware, check5kUserMilestone, async (req, res) => {
   const { user_id } = req.user;
 
   try {
@@ -56,8 +85,6 @@ router.post('/initiate', authMiddleware, async (req, res) => {
     );
 
     if (response.data.status) {
-      // Store the reference temporarily (optional – you could save in a pending_payments table)
-      // For now, the webhook will handle the success
       res.json({ authorization_url: response.data.data.authorization_url });
     } else {
       throw new Error(response.data.message || 'Paystack initialization failed');
@@ -68,7 +95,9 @@ router.post('/initiate', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
 // POST /api/payments/webhook – Paystack webhook handler
+// ============================================================
 router.post('/webhook', express.json(), async (req, res) => {
   try {
     const hash = crypto
