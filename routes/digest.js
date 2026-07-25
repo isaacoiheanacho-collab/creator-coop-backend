@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const cache = require('../utils/cache');
 
 const CRON_SECRET = process.env.CRON_SECRET || 'your-super-secret-key-here';
 
@@ -27,11 +28,17 @@ router.post('/trigger', async (req, res) => {
     // SIMPLIFIED HYBRID COHORT LOGIC - 1 or 2 Cohorts
     // ============================================================
     
-    // 1. Get total verified users
-    const userCountResult = await db.query(
-      'SELECT COUNT(*) FROM users WHERE email_verified = TRUE'
-    );
-    const totalUsers = parseInt(userCountResult.rows[0].count);
+    // 1. Get total verified users (cached)
+    const cacheKey = 'digest:user_count';
+    let totalUsers = await cache.getCached(cacheKey);
+    
+    if (!totalUsers) {
+      const userCountResult = await db.query(
+        'SELECT COUNT(*) FROM users WHERE email_verified = TRUE'
+      );
+      totalUsers = parseInt(userCountResult.rows[0].count);
+      await cache.setCached(cacheKey, totalUsers, 3600); // Cache for 1 hour
+    }
     
     // 2. Determine number of cohorts based on user count
     let totalCohorts;
@@ -57,7 +64,8 @@ router.post('/trigger', async (req, res) => {
         currentHour,
         scheduledHours: productiveHours,
         totalCohorts,
-        totalUsers
+        totalUsers,
+        timestamp: new Date().toISOString()
       });
     }
 
@@ -66,7 +74,9 @@ router.post('/trigger', async (req, res) => {
     console.log(`⏰ [Digest] Running for Cohort ${cohort + 1}/${totalCohorts} at ${currentHour}:00 (UK time)`);
     console.log(`📊 [Digest] Total verified users: ${totalUsers}, Cohorts: ${totalCohorts}`);
 
-    // 4. Get users in this cohort with unengaged links
+    // ============================================================
+    // 4. GET PERSONALIZED UNENGAGED COUNT FOR EACH USER IN COHORT
+    // ============================================================
     const cohortUsers = await db.query(
       `SELECT 
         u.user_id,
@@ -79,7 +89,7 @@ router.post('/trigger', async (req, res) => {
          AND bl.is_expired = FALSE
          AND ce.link_id IS NULL
          AND u.email_verified = TRUE
-         AND (u.last_digest_sent IS NULL OR u.last_digest_sent < NOW() - INTERVAL '24 hours')
+         AND (u.last_digest_sent IS NULL OR u.last_digest_sent < CURRENT_DATE)
        GROUP BY u.user_id
        HAVING COUNT(bl.link_id) > 0`,
       [totalCohorts, cohort]
@@ -92,7 +102,8 @@ router.post('/trigger', async (req, res) => {
         cohort: cohort + 1,
         users: 0,
         totalCohorts,
-        totalUsers
+        totalUsers,
+        timestamp: new Date().toISOString()
       });
     }
 
@@ -102,13 +113,19 @@ router.post('/trigger', async (req, res) => {
 
     console.log(`📊 [Digest] Cohort ${cohort + 1}: ${totalUsersNotified} users have ${totalUnengagedLinks} unengaged links`);
 
-    // 5. Insert personalized notifications
+    // ============================================================
+    // 5. INSERT PERSONALIZED NOTIFICATIONS (Batch Insert)
+    // ============================================================
     const notificationValues = [];
     const placeholders = [];
     let paramIndex = 1;
 
     cohortUsers.rows.forEach(({ user_id, unengaged_count }) => {
-      const message = `🚀 You have ${unengaged_count} boost link(s) waiting in your feed!`;
+      // ✅ Personalized message with exact unengaged count
+      const message = unengaged_count === 1
+        ? `🚀 You have 1 unengaged feed waiting!`
+        : `🚀 You have ${unengaged_count} unengaged feeds waiting!`;
+      
       notificationValues.push(user_id, message);
       placeholders.push(`($${paramIndex}, $${paramIndex + 1})`);
       paramIndex += 2;
@@ -120,19 +137,24 @@ router.post('/trigger', async (req, res) => {
       notificationValues
     );
 
-    // 6. Update last_digest_sent for these users
+    // ============================================================
+    // 6. UPDATE last_digest_sent FOR THESE USERS
+    // ============================================================
     await db.query(
-      `UPDATE users SET last_digest_sent = NOW() 
+      `UPDATE users SET last_digest_sent = CURRENT_DATE 
        WHERE user_id = ANY($1::int[])`,
       [userIds]
     );
 
-    // 7. Send Web Push
+    // ============================================================
+    // 7. SEND WEB PUSH TO THIS COHORT ONLY
+    // ============================================================
     const sendPushNotifications = req.app.get('sendPushNotifications');
     if (sendPushNotifications && typeof sendPushNotifications === 'function') {
+      // Generic push message (the personalized count is in the notification)
       const digestMessage = totalUnengagedLinks === 1
-        ? `🚀 1 boost link is waiting in your feed!`
-        : `🚀 ${totalUnengagedLinks} boost links are waiting in your feed!`;
+        ? `🚀 1 unengaged feed is waiting for you!`
+        : `🚀 ${totalUnengagedLinks} unengaged feeds are waiting for you!`;
       
       try {
         await sendPushNotifications(digestMessage);
@@ -141,6 +163,11 @@ router.post('/trigger', async (req, res) => {
         console.error(`❌ [Digest] Push failed:`, err.message);
       }
     }
+
+    // ============================================================
+    // 8. INVALIDATE NOTIFICATION CACHE
+    // ============================================================
+    await cache.invalidateCache('notifications:*');
 
     res.json({
       success: true,
@@ -162,7 +189,9 @@ router.post('/trigger', async (req, res) => {
   }
 });
 
+// ============================================================
 // GET /api/digest/test - Test endpoint
+// ============================================================
 router.get('/test', (req, res) => {
   res.json({
     success: true,
@@ -171,7 +200,9 @@ router.get('/test', (req, res) => {
   });
 });
 
+// ============================================================
 // GET /api/digest/status - Check digest status
+// ============================================================
 router.get('/status', async (req, res) => {
   try {
     const userCount = await db.query(
@@ -188,8 +219,28 @@ router.get('/status', async (req, res) => {
         MAX(created_at) AS last_run,
         COUNT(*) AS total_sent_today
        FROM notifications 
-       WHERE message LIKE '%boost link%'
+       WHERE message LIKE '%unengaged feed%'
          AND created_at > CURRENT_DATE`
+    );
+    
+    // Get unengaged count distribution
+    const distribution = await db.query(
+      `SELECT 
+        COUNT(*) AS total_users,
+        SUM(CASE WHEN unengaged_count > 0 THEN 1 ELSE 0 END) AS users_with_unengaged
+       FROM (
+         SELECT 
+           u.user_id,
+           COUNT(bl.link_id) AS unengaged_count
+         FROM users u
+         CROSS JOIN boost_links bl
+         LEFT JOIN completed_engagements ce 
+           ON ce.link_id = bl.link_id AND ce.user_id = u.user_id
+         WHERE bl.is_expired = FALSE
+           AND ce.link_id IS NULL
+           AND u.email_verified = TRUE
+         GROUP BY u.user_id
+       ) AS counts`
     );
     
     res.json({
@@ -204,6 +255,10 @@ router.get('/status', async (req, res) => {
       },
       lastRun: lastRun.rows[0]?.last_run || null,
       sentToday: parseInt(lastRun.rows[0]?.total_sent_today || 0),
+      unengagedStats: {
+        total_users: parseInt(distribution.rows[0]?.total_users || 0),
+        users_with_unengaged: parseInt(distribution.rows[0]?.users_with_unengaged || 0)
+      },
       timestamp: new Date().toISOString()
     });
   } catch (err) {

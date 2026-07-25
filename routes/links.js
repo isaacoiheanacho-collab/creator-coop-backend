@@ -80,23 +80,10 @@ router.post('/boost', authMiddleware, async (req, res) => {
     const creatorName = creatorResult.rows[0]?.username || 'Someone';
 
     // ============================================================
-    // 4. BATCH NOTIFICATIONS - OPTIMIZED (Single SQL, no JS loop)
-    // ============================================================
-    try {
-      await db.query(
-        `INSERT INTO notifications (user_id, link_id, creator_id, creator_name, message)
-         SELECT user_id, $1, $2, $3, $4
-         FROM users
-         WHERE user_id != $2`,
-        [newLink.rows[0].link_id, user_id, creatorName, `${creatorName} shared a new boost! 🚀`]
-      );
-      console.log(`📝 Batch notifications saved for all users about ${creatorName}'s boost`);
-    } catch (dbError) {
-      console.error('Failed to save notifications to database:', dbError);
-    }
-
-    // ============================================================
-    // 5. REAL-TIME SOCKET NOTIFICATION (for currently online users)
+    // 4. REAL-TIME SOCKET NOTIFICATION (for currently online users)
+    //    ✅ KEPT - Online users get instant notifications
+    //    ❌ REMOVED - Batch notification insert for all users
+    //    Web push for offline users is now handled by digest cron
     // ============================================================
     try {
       const io = req.app.get('io');
