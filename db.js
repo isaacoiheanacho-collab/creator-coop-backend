@@ -16,7 +16,7 @@ const pool = new Pool({
   connectionString: connectionString,
   max: 20,
   idleTimeoutMillis: 10000,        // ✅ Close idle connections after 10s (allows Neon to sleep)
-  connectionTimeoutMillis: 15000,   // ✅ Increased from 5000 to 15000 (Neon cold start can take longer)
+  connectionTimeoutMillis: 5000,   // ✅ Fail fast if can't connect
   ssl: isProduction ? { rejectUnauthorized: false } : false,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10000,
