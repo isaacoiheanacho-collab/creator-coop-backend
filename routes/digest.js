@@ -45,13 +45,13 @@ router.post('/trigger', async (req, res) => {
     let productiveHours;
     
     if (totalUsers <= 1500) {
-      // Small user base: 1 cohort at 10:00 AM
+      // Small user base: 1 cohort at 9:00 AM
       totalCohorts = 1;
-      productiveHours = [10]; // 10:00 AM only
+      productiveHours = [9]; // 9:00 AM only
     } else {
-      // Large user base: 2 cohorts at 10AM and 4PM
+      // Large user base: 2 cohorts at 9AM and 4PM
       totalCohorts = 2;
-      productiveHours = [10, 16]; // 10:00 AM, 4:00 PM
+      productiveHours = [9, 16]; // 9:00 AM, 4:00 PM
     }
     
     // 3. Check if current hour is a scheduled digest hour
@@ -211,7 +211,7 @@ router.get('/status', async (req, res) => {
     const totalUsers = parseInt(userCount.rows[0].count);
     
     const totalCohorts = totalUsers <= 1500 ? 1 : 2;
-    const productiveHours = totalUsers <= 1500 ? [10] : [10, 16];
+    const productiveHours = totalUsers <= 1500 ? [9] : [9, 16];
     
     // Get last digest run
     const lastRun = await db.query(
@@ -250,8 +250,8 @@ router.get('/status', async (req, res) => {
         totalCohorts,
         hours: productiveHours,
         description: totalUsers <= 1500 
-          ? '1 cohort at 10:00 AM' 
-          : '2 cohorts at 10:00 AM and 4:00 PM'
+          ? '1 cohort at 9:00 AM' 
+          : '2 cohorts at 9:00 AM and 4:00 PM'
       },
       lastRun: lastRun.rows[0]?.last_run || null,
       sentToday: parseInt(lastRun.rows[0]?.total_sent_today || 0),
