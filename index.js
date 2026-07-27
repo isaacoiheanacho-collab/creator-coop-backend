@@ -282,7 +282,6 @@ const paymentRoutes = require('./routes/payments');
 const profileRoutes = require('./routes/profile');
 const boostRoutes = require('./routes/boosts');
 const adminRoutes = require('./routes/admin');
-const digestRoutes = require('./routes/digest');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/links', linkRoutes);
@@ -290,7 +289,6 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/boosts', boostRoutes);
 app.use('/api/admin', adminRoutes);
-app.use('/api/digest', digestRoutes);
 
 // ============================================================
 // HEALTH CHECK
