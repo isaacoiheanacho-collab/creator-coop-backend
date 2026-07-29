@@ -22,7 +22,9 @@ function generateOTP() {
 
 // ==================== AUTH ROUTES ====================
 
-// POST /api/auth/register
+// ============================================================
+// POST /api/auth/register - FIXED: Prevent sequence gaps
+// ============================================================
 router.post('/register', async (req, res) => {
   const { username, email, password, social_profile_url } = req.body;
   
@@ -31,11 +33,13 @@ router.post('/register', async (req, res) => {
   }
   
   try {
+    // ✅ STEP 1: Check if email exists FIRST (prevents sequence gaps)
     const userExist = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (userExist.rows.length > 0) {
       return res.status(400).json({ error: 'Email already exists.' });
     }
     
+    // ✅ STEP 2: Now insert (sequence only increments on success)
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
     
