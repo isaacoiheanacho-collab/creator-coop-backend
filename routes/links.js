@@ -4,6 +4,7 @@ const db = require('../db');
 const authMiddleware = require('../authMiddleware');
 const cache = require('../utils/cache');
 const { cleanUrl, hasTrackingParams } = require('../utils/urlCleaner');
+const { validateSocialMediaUrl } = require('../utils/urlValidator');
 
 const EXPIRATION_THRESHOLD_PERCENTAGE = 0.95; // 95% of active users must engage
 
@@ -16,6 +17,15 @@ router.post('/boost', authMiddleware, async (req, res) => {
 
   if (!link_url) {
     return res.status(400).json({ error: 'Please provide a valid content link URL.' });
+  }
+
+  // ✅ VALIDATE URL IS FROM SUPPORTED SOCIAL MEDIA PLATFORM
+  const validation = validateSocialMediaUrl(link_url);
+  if (!validation.valid) {
+    return res.status(400).json({ 
+      error: validation.error,
+      supported_platforms: ['Facebook', 'Instagram', 'TikTok', 'X', 'YouTube', 'LinkedIn', 'Telegram']
+    });
   }
 
   // ✅ Clean the URL - remove tracking parameters

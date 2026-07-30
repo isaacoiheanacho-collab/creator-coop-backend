@@ -167,32 +167,6 @@ router.get('/stats', authMiddleware, isAdmin, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/admin/boosts/all - Get all boosts with user info
-// ============================================================
-router.get('/boosts/all', authMiddleware, isAdmin, async (req, res) => {
-  try {
-    const boosts = await db.query(`
-      SELECT 
-        bl.link_id,
-        bl.link_url,
-        bl.clicks_received,
-        bl.is_expired,
-        bl.created_at,
-        u.username,
-        u.user_id
-      FROM boost_links bl
-      JOIN users u ON bl.creator_id = u.user_id
-      ORDER BY bl.created_at DESC
-      LIMIT 1000
-    `);
-    res.json({ boosts: boosts.rows });
-  } catch (err) {
-    console.error('Admin boosts error:', err);
-    res.status(500).json({ error: 'Failed to fetch boosts.' });
-  }
-});
-
-// ============================================================
 // POST /api/admin/trigger-digest - Manual digest trigger
 // ============================================================
 router.post('/trigger-digest', authMiddleware, isAdmin, async (req, res) => {
@@ -368,44 +342,6 @@ router.post('/trigger-digest', authMiddleware, isAdmin, async (req, res) => {
       error: err.message,
       timestamp: new Date().toISOString()
     });
-  }
-});
-
-// ============================================================
-// DELETE /api/admin/boost/:id - Remove a boost (admin only)
-// ============================================================
-router.delete('/boost/:id', authMiddleware, isAdmin, async (req, res) => {
-  try {
-    const boostId = req.params.id;
-    
-    // Get boost info before deleting (for audit)
-    const boostInfo = await db.query(
-      'SELECT link_id, link_url, creator_id FROM boost_links WHERE link_id = $1',
-      [boostId]
-    );
-    
-    if (boostInfo.rows.length === 0) {
-      return res.status(404).json({ error: 'Boost not found.' });
-    }
-    
-    // Delete the boost
-    await db.query(
-      'DELETE FROM boost_links WHERE link_id = $1',
-      [boostId]
-    );
-    
-    // Invalidate cache
-    await cache.invalidateCache('feed:*');
-    
-    console.log(`🗑️ Admin removed boost ${boostId} (${boostInfo.rows[0].link_url})`);
-    
-    res.json({
-      message: 'Boost removed successfully.',
-      boost: boostInfo.rows[0]
-    });
-  } catch (err) {
-    console.error('Remove boost error:', err);
-    res.status(500).json({ error: err.message });
   }
 });
 

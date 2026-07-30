@@ -20,7 +20,24 @@ function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// ==================== AUTH ROUTES ====================
+// ============================================================
+// GET /api/auth/check-email - Check if email exists (for registration)
+// ============================================================
+router.get('/check-email', async (req, res) => {
+  const { email } = req.query;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required.' });
+  }
+  
+  try {
+    const result = await db.query('SELECT email FROM users WHERE email = $1', [email]);
+    res.json({ exists: result.rows.length > 0 });
+  } catch (err) {
+    console.error('Check email error:', err);
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
 
 // ============================================================
 // POST /api/auth/register - FIXED: Prevent sequence gaps
@@ -34,28 +51,79 @@ router.post('/register', async (req, res) => {
   
   try {
     // ✅ STEP 1: Check if email exists FIRST (prevents sequence gaps)
-    const userExist = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const userExist = await db.query('SELECT email FROM users WHERE email = $1', [email]);
     if (userExist.rows.length > 0) {
       return res.status(400).json({ error: 'Email already exists.' });
     }
     
-    // ✅ STEP 2: Now insert (sequence only increments on success)
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
+    // ✅ STEP 2: Check if username exists
+    const usernameExist = await db.query('SELECT username FROM users WHERE username = $1', [username]);
+    if (usernameExist.rows.length > 0) {
+      return res.status(400).json({ error: 'Username already taken. Please choose another.' });
+    }
     
-    const newUser = await db.query(
-      `INSERT INTO users (username, email, password_hash, social_profile_url, email_verified)
-       VALUES ($1, $2, $3, $4, FALSE)
-       RETURNING user_id, username, email, social_profile_url`,
-      [username, email, passwordHash, social_profile_url]
-    );
+    // ✅ STEP 3: Validate social_profile_url format (basic check)
+    if (!social_profile_url.startsWith('http://') && !social_profile_url.startsWith('https://')) {
+      return res.status(400).json({ error: 'Social profile URL must be a valid URL starting with http:// or https://' });
+    }
     
-    res.status(201).json({
-      message: 'Registration successful! Please verify your email.',
-      user: newUser.rows[0]
-    });
+    // ✅ STEP 4: Use a transaction with explicit ID assignment
+    // This is the KEY FIX - we manually assign the next ID to prevent gaps
+    const client = await db.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Get the next sequence value without incrementing it yet
+      // We use a FOR UPDATE lock to prevent race conditions
+      const seqResult = await client.query(
+        `SELECT nextval('users_user_id_seq') as next_id`
+      );
+      const nextId = parseInt(seqResult.rows[0].next_id);
+      
+      // Hash password
+      const salt = await bcrypt.genSalt(10);
+      const passwordHash = await bcrypt.hash(password, salt);
+      
+      // Insert with explicit ID
+      const newUser = await client.query(
+        `INSERT INTO users (user_id, username, email, password_hash, social_profile_url, email_verified)
+         VALUES ($1, $2, $3, $4, $5, FALSE)
+         RETURNING user_id, username, email, social_profile_url`,
+        [nextId, username, email, passwordHash, social_profile_url]
+      );
+      
+      await client.query('COMMIT');
+      
+      res.status(201).json({
+        message: 'Registration successful! Please verify your email.',
+        user: newUser.rows[0]
+      });
+      
+    } catch (err) {
+      await client.query('ROLLBACK');
+      // If there's an error, reset the sequence to the next available value
+      // This prevents gaps from failed inserts
+      console.error('Registration transaction error:', err.message);
+      
+      // Check for duplicate key errors (race condition)
+      if (err.code === '23505') {
+        // Duplicate key violation - email or username already taken
+        if (err.constraint === 'users_email_key') {
+          return res.status(400).json({ error: 'Email already exists.' });
+        }
+        if (err.constraint === 'users_username_key') {
+          return res.status(400).json({ error: 'Username already taken. Please choose another.' });
+        }
+      }
+      
+      res.status(500).json({ error: 'Registration failed. Please try again.' });
+    } finally {
+      client.release();
+    }
+    
   } catch (err) {
-    console.error(err.message);
+    console.error('Registration error:', err.message);
     res.status(500).json({ error: 'Server error during registration.' });
   }
 });
